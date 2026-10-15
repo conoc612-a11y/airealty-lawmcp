@@ -5,6 +5,8 @@
 
 ## 연결하기 — 두 가지 방법
 
+> 단계별 설치·이용 안내(Claude Code·Claude 앱·Cursor, 자기 키 설치, 한도·오류 표): **[USER_GUIDE.md](USER_GUIDE.md)**
+
 ### 1. 호스팅 서버(토큰 필요) — 설치 없이 한 줄
 
 ```bash
