@@ -1,0 +1,25 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "kr.co.airealty/lawmcp",
+  "title": "airealty 한국 법령 (법제처 OPEN API)",
+  "description": "대한민국 법령·조문·별표·연혁·판례·해석례를 법제처 국가법령정보 OPEN API 로 찾아보는 읽기 전용 MCP 서버. 코어 12 + 보조 12 도구.",
+  "version": "0.1.0",
+  "websiteUrl": "https://airealty.co.kr",
+  "repository": { "url": "https://github.com/conoc612-a11y/airealty-lawmcp", "source": "github" },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://law.airealty.co.kr/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "운영자가 발급한 Bearer 토큰 (conoc612@gmail.com 에 요청)",
+          "isRequired": true,
+          "isSecret": true,
+          "value": "Bearer {token}",
+          "variables": { "token": { "description": "발급받은 토큰 값", "isRequired": true, "isSecret": true } }
+        }
+      ]
+    }
+  ]
+}

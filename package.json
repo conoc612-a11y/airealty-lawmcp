@@ -1,0 +1,31 @@
+{
+  "name": "airealty-lawmcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "airealty 법령 MCP 서버 — 법제처 국가법령정보 OPEN API(DRF) 위에 올린 clean-room 구현",
+  "bin": {
+    "airealty-lawmcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "http": "node src/http-server.js",
+    "build-check": "node tools/build_check.js",
+    "test": "node tools/build_check.js && node --test \"test/*.test.js\"",
+    "test:live": "node --test \"test/live/*.test.js\"",
+    "bench": "node tools/bench.js",
+    "token": "node tools/token.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.25.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/conoc612-a11y/airealty-lawmcp.git"
+  }
+}
