@@ -6,7 +6,7 @@ import { fetchArticle, fetchFullBody, buildArticle, tocUnits, splitArticleByPara
 import { getArticleIndex, rangeOf, nearestFromIndex } from "../article_index.js";
 import { parseArticleRef, formatArticleRef, sameArticle } from "../jo.js";
 import { LawError, invalid } from "../errors.js";
-import { mergeCache, paginateByBytes } from "../envelope.js";
+import { mergeCache, paginateByBytes, cacheState } from "../envelope.js";
 import { todayKst } from "../kst.js";
 
 /** 공통: 법령 확정 + 판 선택 → 본문 접근 방법(useId: 현행 판을 ID 로 1왕복). */
@@ -78,8 +78,8 @@ export default defineTool({
     if (law.upcoming.length) warnings.push(`시행예정 개정 있음: 시행일 ${[...new Set(law.upcoming.map((u) => u.effectiveDate))].join(", ")} — 이 조문 변경 여부는 statute_history(article_changes) 로 확인`);
     // ── 목차 모드 ──
     if (!a.articles || !a.articles.length) {
-      const { body, hit } = loc.prefetched || await fetchFullBody(access);
-      cacheStates.push(hit ? "hit" : "miss");
+      const { body, hit, stale } = loc.prefetched || await fetchFullBody(access);
+      cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       const toc = tocUnits(body);
       const pg = paginateByBytes(toc, { maxBytes: a.maxBytes, part: a.part });
       return ok({ items: pg.items, total: toc.length, page: { no: pg.part, size: pg.items.length, hasMore: pg.hasMore }, warnings, notes: ["목차 모드: 본문 없음. 조문 본문은 articles 에 표기를 넣어 다시 부르세요"], cacheState: mergeCache(cacheStates), asOf: D,
@@ -90,12 +90,12 @@ export default defineTool({
     const refs = refs0, uniq = uniq0;
     const items = []; let allUnits = null;
     const results = loc.prefetched || await Promise.all(uniq.map((ref) => fetchArticle(access, ref)));
-    for (const r of results) cacheStates.push(r.hit ? "hit" : "miss");
+    for (const r of results) cacheStates.push(cacheState(r));
     for (let i = 0; i < uniq.length; i++) {
       const ref = uniq[i]; const r = results[i];
       if (!r.units.length) {
         // 없는 조문: 범위·가까운 조문은 조문 번호 색인(디스크 24h)에서 — 전체 본문은 색인이 없을 때 한 번만
-        if (!allUnits) { const ix = await getArticleIndex(access, { mst: access.mst, efYd: access.efYd }); cacheStates.push(ix.hit ? "hit" : "miss"); allUnits = ix.index; }
+        if (!allUnits) { const ix = await getArticleIndex(access, { mst: access.mst, efYd: access.efYd }); cacheStates.push(cacheState(ix)); allUnits = ix.index; }
         const vr = rangeOf(allUnits);
         throw new LawError("ARTICLE_NOT_FOUND", `${law.name}에 ${formatArticleRef(ref)} 없음`, { retryable: false, data: { validRange: vr.validRange, nearest: vr.all.length ? nearestFromIndex(allUnits, ref) : [] } });
       }

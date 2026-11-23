@@ -79,7 +79,7 @@ test("색인 얻기: 없으면 한 번 만들고 디스크에 저장 → 다음�
     // 만료: 디스크 파일을 옛날 것으로 바꾼다 → stale 반환 + 백그라운드 재생성
     ixTest.clear(); writeDisk("article_index", KEY, c.index, Date.now() - INDEX_TTL - 1000);
     assert.equal(hasFreshIndex(access, ver), false);
-    const d = await getArticleIndex(access, ver); assert.equal(d.source, "stale"); assert.ok(d.index.count > 0);
+    const d = await getArticleIndex(access, ver); assert.equal(d.source, "stale"); assert.equal(d.stale, true); assert.ok(d.index.count > 0);
     for (let i = 0; i < 50 && fullBodyCalls(seen) < 2; i++) await new Promise((r) => setTimeout(r, 20));
     assert.equal(fullBodyCalls(seen), 2, "뒤에서 한 번 다시 받음");
     for (let i = 0; i < 50 && !hasFreshIndex(access, ver); i++) await new Promise((r) => setTimeout(r, 20));

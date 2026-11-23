@@ -1,4 +1,4 @@
-// 카탈로그 도구 12종 (SPEC §2.3, §4.13) — toolbox 로만 노출.
+// 카탈로그 도구는 toolbox 를 통해 제공한다.
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
 import { search, service, asList, str, digits, lawRow } from "../upstream.js";
 import { TTL, cache } from "../cache.js";
@@ -15,7 +15,10 @@ import { searchSource } from "./source_search.js";
 import { fetchSourceBody, buildSourceDoc, cleanText, keywordsOf } from "./source_get.js";
 import { diffSentences } from "../diff.js";
 import { invalid, LawError } from "../errors.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState } from "../envelope.js";
+import legal_calc from "./legal_calc.js";
+import caseno_verify from "./caseno_verify.js";
+import case_search from "./case_search.js";
 
 const catalog = (summary, tags, example) => ({ summary, tags, example });
 
@@ -27,9 +30,9 @@ export const term_lookup = defineTool({
   async handler(a) {
     const notes = []; const cs = [];
     if (a.mode === "define") {
-      const { data, hit } = await service("lstrm", { query: a.query }, { ttl: TTL.body }); cs.push(hit ? "hit" : "miss");
+      const { data, hit, stale } = await service("lstrm", { query: a.query }, { ttl: TTL.body }); cs.push(stale ? "stale" : hit ? "hit" : "miss");
       if (typeof data?.Law === "string" || !data) {
-        const r = await search("lstrm", { query: a.query, display: a.size, page: a.page }, { rowKeys: ["lstrm"] }); cs.push(r.hit ? "hit" : "miss");
+        const r = await search("lstrm", { query: a.query, display: a.size, page: a.page }, { rowKeys: ["lstrm"] }); cs.push(cacheState(r));
         const items = r.rows.map((x) => ({ term: str(x["법령용어명"]), termId: str(x["법령용어ID"]), kindCode: str(x["법령종류코드"]) }));
         notes.push("정확히 일치하는 용어 정의가 없어 용어명 검색 결과를 돌려줍니다 — term 값으로 define 을 다시 부르세요");
         return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, notes, cacheState: mergeCache(cs) });
@@ -41,14 +44,14 @@ export const term_lookup = defineTool({
     }
     if (a.mode === "from_everyday" || a.mode === "to_everyday") {
       const target = a.mode === "from_everyday" ? "dlytrmRlt" : "lstrmRlt";
-      const { data, hit } = await service(target, { query: a.query }, { ttl: TTL.body }); cs.push(hit ? "hit" : "miss");
+      const { data, hit, stale } = await service(target, { query: a.query }, { ttl: TTL.body }); cs.push(stale ? "stale" : hit ? "hit" : "miss");
       const root = Object.values(data || {}).find((v) => v && typeof v === "object") || {};
       const base = root[a.mode === "from_everyday" ? "일상용어" : "법령용어"] || {};
       const items = asList(base["연계용어"]).map((x) => ({ term: str(x["법령용어명"] || x["일상용어명"]), relation: str(x["용어관계"]), relationCode: str(x["용어관계코드"]) })).filter((x) => x.term);
       if (!items.length) notes.push("연계 용어 없음");
       return ok({ items, total: items.length, notes, cacheState: mergeCache(cs), extra: { input: str(base["일상용어명"] || base["법령용어명"]) || a.query }, next: items[0] ? [{ tool: "toolbox", args: { action: "call", name: "term_lookup", args: { mode: "articles", query: items[0].term } }, why: `'${items[0].term}' 이 쓰인 조문` }] : [] });
     }
-    const { data, hit } = await service("lstrmRltJo", { query: a.query }, { ttl: TTL.body }); cs.push(hit ? "hit" : "miss");
+    const { data, hit, stale } = await service("lstrmRltJo", { query: a.query }, { ttl: TTL.body }); cs.push(stale ? "stale" : hit ? "hit" : "miss");
     const root = Object.values(data || {}).find((v) => v && typeof v === "object") || {};
     const base = root["법령용어"] || {};
     const items = asList(base["연계법령"]).map((x) => { const art = parseInt(digits(x["조번호"]), 10); const br = parseInt(digits(x["조가지번호"]) || "0", 10) || 0; return { law: str(x["법령명"]), label: Number.isFinite(art) ? articleLabel(art, br) : undefined, usage: str(x["용어구분"]) || undefined, snippet: cleanText(x["조문내용"]).slice(0, 200), link: lawLink(str(x["법령명"]), Number.isFinite(art) ? articleLabel(art, br) : undefined) }; }).filter((x) => x.law);
@@ -66,7 +69,7 @@ export const abbreviation_list = defineTool({
     await ensureDictionary();
     let abbr = dictionary().abbreviations;
     let cs = "hit";
-    if (!abbr.length) { const r = await search("lsAbrv", {}, { rowKeys: ["law"], ttl: TTL.dictionary, long: true }); cs = r.hit ? "hit" : "miss"; abbr = r.rows.map((x) => ({ abbr: str(x["법령약칭명"]), name: str(x["법령명한글"]), lawId: str(x["법령ID"]), current: str(x["현행연혁코드"]) === "현행" })).filter((x) => x.abbr); }
+    if (!abbr.length) { const r = await search("lsAbrv", {}, { rowKeys: ["law"], ttl: TTL.dictionary, long: true }); cs = cacheState(r); abbr = r.rows.map((x) => ({ abbr: str(x["법령약칭명"]), name: str(x["법령명한글"]), lawId: str(x["법령ID"]), current: str(x["현행연혁코드"]) === "현행" })).filter((x) => x.abbr); }
     const q = a.query ? normalizeName(a.query) : "";
     let rows = abbr.filter((x) => x.current);
     if (q) rows = rows.filter((x) => normalizeName(x.abbr).includes(q) || normalizeName(x.name).includes(q));
@@ -86,7 +89,7 @@ export const change_feed = defineTool({
     if (a.date) { const d = parseDate(a.date); if (!d) throw invalid("date 형식 오류"); dates.push(d); }
     else { const n = a.days || 7; const today = todayKst(); for (let i = 0; i < n; i++) dates.push(addDays(today, -i)); }
     const cs = []; const warnings = [];
-    const results = await Promise.all(dates.map(async (d) => { try { const rows = []; for (let page = 1; page <= 5; page++) { const r = await search("lsHstInf", { regDt: d, display: 100, page, ...(a.org ? { org: a.org } : {}) }, { rowKeys: ["law"], ttl: TTL.list, long: true }); cs.push(r.hit ? "hit" : "miss"); rows.push(...r.rows); if (r.rows.length < 100 || rows.length >= (r.total || 0)) break; } return { d, rows }; } catch (e) { warnings.push(`${fmtDate(d)}: ${e.code || "조회 실패"}`); return { d, rows: [] }; } }));
+    const results = await Promise.all(dates.map(async (d) => { try { const rows = []; for (let page = 1; page <= 5; page++) { const r = await search("lsHstInf", { regDt: d, display: 100, page, ...(a.org ? { org: a.org } : {}) }, { rowKeys: ["law"], ttl: TTL.list, long: true }); cs.push(cacheState(r)); rows.push(...r.rows); if (r.rows.length < 100 || rows.length >= (r.total || 0)) break; } return { d, rows }; } catch (e) { warnings.push(`${fmtDate(d)}: ${e.code || "조회 실패"}`); return { d, rows: [] }; } }));
     const seen = new Set(); const items = []; const stats = { byKind: {}, byRevision: {}, byDate: {} };
     for (const { d, rows } of results) for (const x of rows) { const l = lawRow(x); const k = l.mst + l.effectiveDate; if (seen.has(k)) continue; seen.add(k); items.push({ changeDate: fmtDate(d), ...l, link: lawLink(l.name) }); stats.byKind[l.kind] = (stats.byKind[l.kind] || 0) + 1; stats.byRevision[l.revision] = (stats.byRevision[l.revision] || 0) + 1; stats.byDate[fmtDate(d)] = (stats.byDate[fmtDate(d)] || 0) + 1; }
     items.sort((x, y) => (y.changeDate || "").localeCompare(x.changeDate || "") || x.name.localeCompare(y.name, "ko"));
@@ -129,7 +132,7 @@ export const article_refs = defineTool({
     for (const m of text.matchAll(/「([^「」]{2,60})」(?!\s*제\s*\d)/g)) { refs.push({ kind: "other_law", target: { law: m[1], label: null }, span: [m.index, m.index + m[0].length], raw: m[0] }); }
     refs.sort((x, y) => x.span[0] - y.span[0]);
     const uniq = []; for (const x of refs) if (!uniq.some((u) => u.span[0] === x.span[0])) uniq.push(x);
-    return ok({ items: uniq, total: uniq.length, cacheState: mergeCache([...loc.cacheStates, r.hit ? "hit" : "miss"]), asOf: D, extra: { law: loc.law, article: art.label, title: art.title }, next: uniq.filter((x) => x.kind === "other_law" && x.target.label).slice(0, 1).map((x) => ({ tool: "article_get", args: { name: x.target.law, articles: [x.target.label] }, why: "참조된 다른 법령 조문" })) });
+    return ok({ items: uniq, total: uniq.length, cacheState: mergeCache([...loc.cacheStates, cacheState(r)]), asOf: D, extra: { law: loc.law, article: art.label, title: art.title }, next: uniq.filter((x) => x.kind === "other_law" && x.target.label).slice(0, 1).map((x) => ({ tool: "article_get", args: { name: x.target.law, articles: [x.target.label] }, why: "참조된 다른 법령 조문" })) });
   },
 });
 
@@ -160,13 +163,13 @@ export const precedent_similar = defineTool({
     const terms = []; // 법령용어 사전 일치: 업스트림 용어 검색은 비용이 커서 텍스트의 2~6자 한글 어절 중 용어 사전에 있는 것만
     const words = [...new Set((a.text.match(/[가-힣]{2,8}/g) || []))].slice(0, 40);
     const cs = [];
-    const checks = await Promise.all(words.slice(0, 12).map(async (w) => { try { const r = await search("lstrm", { query: w, display: 3 }, { rowKeys: ["lstrm"], ttl: TTL.dictionary }); cs.push(r.hit ? "hit" : "miss"); return r.rows.some((x) => str(x["법령용어명"]) === w) ? w : null; } catch { return null; } }));
+    const checks = await Promise.all(words.slice(0, 12).map(async (w) => { try { const r = await search("lstrm", { query: w, display: 3 }, { rowKeys: ["lstrm"], ttl: TTL.dictionary }); cs.push(cacheState(r)); return r.rows.some((x) => str(x["법령용어명"]) === w) ? w : null; } catch { return null; } }));
     for (const w of checks) if (w) terms.push(w);
     const keys = [...new Set([...laws, ...dictNames, ...terms])];
     if (!keys.length) throw invalid("문장에서 법령명·법률용어를 찾지 못함 — 법률 용어를 포함해 다시 입력");
     const queries = keys.slice(0, 4);
     const found = new Map();
-    await Promise.all(queries.map(async (q) => { try { const r = await searchSource("precedent", { query: q, field: "body", sort: "relevance", page: 1, size: 20 }); cs.push(r.hit ? "hit" : "miss"); for (const it of r.items) { const e = found.get(it.id) || { ...it, hits: new Set() }; e.hits.add(q); found.set(it.id, e); } } catch {} }));
+    await Promise.all(queries.map(async (q) => { try { const r = await searchSource("precedent", { query: q, field: "body", sort: "relevance", page: 1, size: 20 }); cs.push(cacheState(r)); for (const it of r.items) { const e = found.get(it.id) || { ...it, hits: new Set() }; e.hits.add(q); found.set(it.id, e); } } catch {} }));
     const items = [...found.values()].map((e) => { const titleHits = keys.filter((k) => (e.title || "").includes(k)).length; return { ...e, score: e.hits.size * 2 + titleHits, matched: [...e.hits], hits: undefined }; }).sort((x, y) => y.score - x.score || (y.date || "").localeCompare(x.date || "")).slice(0, a.size);
     for (const it of items) delete it.hits;
     return ok({ items, total: found.size, notes: [`추출어: ${keys.join(", ")} · 점수 = 검색어 일치 수×2 + 제목 포함 수`], cacheState: mergeCache(cs), next: items[0] ? [{ tool: "source_get", args: { source: "precedent", id: items[0].id, mode: "digest" }, why: "1순위 판례 요지" }] : [] });
@@ -182,7 +185,7 @@ export const ordinance_link = defineTool({
     const cs = []; const notes = [];
     if (a.mode === "upper") {
       if (!a.ordinanceName) throw invalid("upper 는 ordinanceName 필요");
-      const r = await search("lnkOrd", { query: a.ordinanceName, display: 100 }, { rowKeys: ["law"] }); cs.push(r.hit ? "hit" : "miss");
+      const r = await search("lnkOrd", { query: a.ordinanceName, display: 100 }, { rowKeys: ["law"] }); cs.push(cacheState(r));
       const items = r.rows.map((x) => ({ ordinance: str(x["자치법규명"]), ordinanceId: str(x["자치법규ID"]), kind: str(x["자치법규종류"]), effectiveDate: fmtDate(x["시행일자"]), link: ordinanceLink(str(x["자치법규명"])) }));
       notes.push("연계 조례 목록 API 는 자치법규명 검색만 지원 — 상위 법령명은 각 조례 본문(source_get ordinance)의 근거 조항에서 확인");
       return ok({ items, total: r.total, notes, cacheState: mergeCache(cs) });
@@ -192,12 +195,12 @@ export const ordinance_link = defineTool({
     if (a.mode === "articles") {
       const ref = a.article ? parseArticleRef(a.article) : null;
       const params = { knd: lawId, display: a.size, page: a.page, ...(ref ? { JO: String(ref.article).padStart(4, "0"), ...(ref.branch ? { JOBR: String(ref.branch).padStart(2, "0") } : {}) } : {}) };
-      const r = await search("lnkLsOrdJo", params, { rowKeys: ["law"] }); cs.push(r.hit ? "hit" : "miss");
+      const r = await search("lnkLsOrdJo", params, { rowKeys: ["law"] }); cs.push(cacheState(r));
       let items = r.rows.map((x) => ({ law: str(x["법령명한글"]), lawArticle: str(x["법령조번호"]), ordinance: str(x["자치법규명"]), ordinanceArticle: str(x["자치법규조번호"]), ordinanceId: str(x["자치법규ID"]), kind: str(x["자치법규종류"]), effectiveDate: fmtDate(x["시행일자"]), link: ordinanceLink(str(x["자치법규명"])) }));
       if (a.region) { items = items.filter((x) => x.ordinance.includes(a.region)); notes.push("region 은 서버 검색을 지원하지 않아 로컬 필터(이 페이지 안에서만)"); }
       return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, notes, cacheState: mergeCache(cs) });
     }
-    const r = await search("lnkLsOrd", { knd: lawId, display: a.size, page: a.page }, { rowKeys: ["law"] }); cs.push(r.hit ? "hit" : "miss");
+    const r = await search("lnkLsOrd", { knd: lawId, display: a.size, page: a.page }, { rowKeys: ["law"] }); cs.push(cacheState(r));
     let items = r.rows.map((x) => ({ ordinance: str(x["자치법규명"]), ordinanceId: str(x["자치법규ID"]), mst: str(x["자치법규일련번호"]), kind: str(x["자치법규종류"]), promulgationDate: fmtDate(x["공포일자"]), effectiveDate: fmtDate(x["시행일자"]), link: ordinanceLink(str(x["자치법규명"])) }));
     if (a.region) { items = items.filter((x) => x.ordinance.includes(a.region)); notes.push("region 은 서버 검색을 지원하지 않아 로컬 필터(이 페이지 안에서만)"); }
     return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, notes, cacheState: mergeCache(cs), next: items[0] ? [{ tool: "source_get", args: { source: "ordinance", id: items[0].mst }, why: "조례 본문" }] : [] });
@@ -213,11 +216,11 @@ export const admin_rule_diff = defineTool({
     const cs = [];
     if (!a.id) {
       if (!a.query) throw invalid("query 또는 id 필요");
-      const r = await search("admrulOldAndNew", { query: a.query, display: a.size, page: a.page }, { rowKeys: ["oldAndNew"] }); cs.push(r.hit ? "hit" : "miss");
+      const r = await search("admrulOldAndNew", { query: a.query, display: a.size, page: a.page }, { rowKeys: ["oldAndNew"] }); cs.push(cacheState(r));
       const items = r.rows.map((x) => ({ id: str(x["신구법일련번호"]), name: str(x["신구법명"]), kind: str(x["법령구분명"]), agency: str(x["소관부처명"]), date: fmtDate(x["발령일자"]), effectiveDate: fmtDate(x["시행일자"]), revision: str(x["제개정구분명"]) }));
       return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, cacheState: mergeCache(cs), next: items[0] ? [{ tool: "toolbox", args: { action: "call", name: "admin_rule_diff", args: { id: items[0].id } }, why: "신구 대조 본문" }] : [] });
     }
-    const { data, hit } = await service("admrulOldAndNew", { ID: a.id }, { ttl: TTL.body, long: true }); cs.push(hit ? "hit" : "miss");
+    const { data, hit, stale } = await service("admrulOldAndNew", { ID: a.id }, { ttl: TTL.body, long: true }); cs.push(stale ? "stale" : hit ? "hit" : "miss");
     const root = Object.values(data || {}).find((v) => v && typeof v === "object") || {};
     if (str(root["신구법존재여부"]) === "N") return ok({ items: [], total: 0, notes: ["신구 대조 자료 없음"], cacheState: mergeCache(cs) });
     const texts = (k) => asList(root[k]?.["조문"]).map((x) => cleanText(x?.content ?? x)).filter(Boolean);
@@ -237,7 +240,7 @@ export const semantic_article_search = defineTool({
     const scopeCode = { statute: 0, annex: 1, admin_rule: 2, admin_rule_annex: 3 }[a.scope];
     const r = await search("aiSearch", { search: scopeCode, query: a.query, display: a.size, page: a.page }, { rowKeys: ["법령조문", "법령별표서식", "행정규칙조문", "행정규칙별표서식"] });
     const items = r.rows.map((x) => { const art = parseInt(digits(x["조문번호"]), 10); const br = parseInt(digits(x["조문가지번호"]) || "0", 10) || 0; const law = str(x["법령명"] || x["행정규칙명"]); const label = Number.isFinite(art) ? articleLabel(art, br) : undefined; return { law, lawId: str(x["법령ID"] || x["행정규칙ID"]) || undefined, label, title: str(x["조문제목"] || x["별표서식제목"]) || undefined, effectiveDate: fmtDate(digits(x["시행일자"]).slice(0, 8)) || undefined, snippet: cleanText(x["조문내용"]).slice(0, 160) || undefined, link: label ? lawLink(law, label) : lawLink(law) }; });
-    return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, cacheState: r.hit ? "hit" : "miss", notes: ["snippet 은 160자 미리보기 — 원문은 article_get"], next: items[0]?.label ? [{ tool: "article_get", args: { name: items[0].law, articles: [items[0].label] }, why: "1순위 조문 원문" }] : [] });
+    return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, cacheState: cacheState(r), notes: ["snippet 은 160자 미리보기 — 원문은 article_get"], next: items[0]?.label ? [{ tool: "article_get", args: { name: items[0].law, articles: [items[0].label] }, why: "1순위 조문 원문" }] : [] });
   },
 });
 
@@ -248,15 +251,15 @@ export const english_statute = defineTool({
   schema: { query: z.string().max(200).optional(), mst: z.string().max(8).optional(), page: S.page, size: S.size(10), maxBytes: S.maxBytes },
   async handler(a) {
     if (a.mst) {
-      const { data, hit } = await service("elaw", { MST: a.mst }, { ttl: TTL.body, long: true });
+      const { data, hit, stale } = await service("elaw", { MST: a.mst }, { ttl: TTL.body, long: true });
       const root = Object.values(data || {}).find((v) => v && typeof v === "object") || {};
       const text = cleanText(root);
       const budget = a.maxBytes - 1500; const cut = Buffer.byteLength(text) > budget;
-      return ok({ items: [{ mst: a.mst, text: cut ? Buffer.from(text).subarray(0, budget).toString() : text }], total: 1, warnings: cut ? ["영문 본문이 예산을 넘어 앞부분만(maxBytes 를 늘려 다시)"] : [], cacheState: hit ? "hit" : "miss" });
+      return ok({ items: [{ mst: a.mst, text: cut ? Buffer.from(text).subarray(0, budget).toString() : text }], total: 1, warnings: cut ? ["영문 본문이 예산을 넘어 앞부분만(maxBytes 를 늘려 다시)"] : [], cacheState: stale ? "stale" : hit ? "hit" : "miss" });
     }
     if (!a.query) throw invalid("query 또는 mst 필요");
     const r = await searchSource("english", { query: a.query, field: "title", sort: "relevance", page: a.page, size: a.size });
-    return ok({ items: r.items.map(({ source, ...x }) => x), total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, cacheState: r.hit ? "hit" : "miss", next: r.items[0] ? [{ tool: "toolbox", args: { action: "call", name: "english_statute", args: { mst: r.items[0].id } }, why: "영문 본문" }] : [] });
+    return ok({ items: r.items.map(({ source, ...x }) => x), total: r.total, page: { no: a.page, size: a.size, hasMore: r.total != null && a.page * a.size < r.total }, cacheState: cacheState(r), next: r.items[0] ? [{ tool: "toolbox", args: { action: "call", name: "english_statute", args: { mst: r.items[0].id } }, why: "영문 본문" }] : [] });
   },
 });
 
@@ -272,11 +275,11 @@ export const article_with_cases = defineTool({
     if (!r.units.length) throw new LawError("ARTICLE_NOT_FOUND", `${loc.law.name}에 ${formatArticleRef(ref)} 없음`, { retryable: false });
     const art = buildArticle(r.units[0], { lawName: loc.law.name, asOfYmd: D });
     const label = art.label; const q = `${loc.law.name} ${label}`;
-    const cs = [...loc.cacheStates, r.hit ? "hit" : "miss"];
+    const cs = [...loc.cacheStates, cacheState(r)];
     let cases = [];
-    try { const s = await searchSource("precedent", { query: q, field: "body", sort: "relevance", page: 1, size: 20 }); cs.push(s.hit ? "hit" : "miss"); cases = s.items.filter((it) => (it.title || "").includes(loc.law.name.replace(/\s+/g, "")) || true).slice(0, a.size); } catch {}
+    try { const s = await searchSource("precedent", { query: q, field: "body", sort: "relevance", page: 1, size: 20 }); cs.push(cacheState(s)); cases = s.items.filter((it) => (it.title || "").includes(loc.law.name.replace(/\s+/g, "")) || true).slice(0, a.size); } catch {}
     return ok({ items: [{ article: art, cases }], total: 1, notes: [`판례는 '${q}' 본문검색 상위 ${a.size}건 — 본문에 법령명과 조문이 함께 나온 것`], cacheState: mergeCache(cs), asOf: D, extra: { law: loc.law }, next: cases[0] ? [{ tool: "source_get", args: { source: "precedent", id: cases[0].id, mode: "digest" }, why: "1순위 판례 요지" }] : [] });
   },
 });
 
-export const CATALOG_TOOLS = [term_lookup, abbreviation_list, change_feed, jo_code, article_refs, link_build, precedent_similar, ordinance_link, admin_rule_diff, semantic_article_search, english_statute, article_with_cases];
+export const CATALOG_TOOLS = [term_lookup, abbreviation_list, change_feed, jo_code, article_refs, link_build, precedent_similar, ordinance_link, admin_rule_diff, semantic_article_search, english_statute, article_with_cases, legal_calc, caseno_verify, case_search];

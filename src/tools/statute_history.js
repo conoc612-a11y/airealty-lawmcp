@@ -10,7 +10,7 @@ import { parseArticleRef, toJoCode, formatArticleRef } from "../jo.js";
 import { diffSentences } from "../diff.js";
 import { lawLink } from "../links.js";
 import { normalizeName } from "../dictionary.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState } from "../envelope.js";
 import { LawError, invalid } from "../errors.js";
 
 export default defineTool({
@@ -23,7 +23,7 @@ export default defineTool({
     if (a.mode === "lineage") {
       if (!a.name) throw invalid("lineage 는 name 필요");
       // 연혁 포함 검색: 폐지된 판을 찾고 현행 후속 후보(이름 포함·약칭)를 근거와 함께
-      const r = await search("eflaw", { query: a.name, nw: "1,2,3", display: 100 }, { rowKeys: ["law"] }); cacheStates.push(r.hit ? "hit" : "miss");
+      const r = await search("eflaw", { query: a.name, nw: "1,2,3", display: 100 }, { rowKeys: ["law"] }); cacheStates.push(cacheState(r));
       const rows = r.rows.map(lawRow);
       const norm = normalizeName(a.name);
       const exact = rows.filter((x) => normalizeName(x.name) === norm);
@@ -54,7 +54,7 @@ export default defineTool({
     }
     if (a.mode === "article_changes") {
       const ref = a.article ? parseArticleRef(a.article) : null; if (!ref) throw invalid("article_changes 는 article 필요");
-      const { data, hit } = await service("lsJoHstInf", { ID: law.lawId, JO: toJoCode(ref), display: 100 }, { ttl: TTL.resolve }); cacheStates.push(hit ? "hit" : "miss");
+      const { data, hit, stale } = await service("lsJoHstInf", { ID: law.lawId, JO: toJoCode(ref), display: 100 }, { ttl: TTL.resolve }); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       const rows = asList(data?.["LawService"]?.["law"] ?? Object.values(data || {})[0]?.["law"]);
       const items = rows.map((x) => { const j = x["조문정보"] || {}; const l = x["법령정보"] || {}; return { date: fmtDate(j["조문변경일"]), reason: str(j["변경사유"]), mst: str(l["법령일련번호"]), effectiveDate: fmtDate(l["시행일자"]), promulgationDate: fmtDate(l["공포일자"]), promulgationNo: str(l["공포번호"]), revision: str(l["제개정구분명"]) }; }).sort((x, y) => (y.date || "").localeCompare(x.date || ""));
       const total = items.length; const pageItems = items.slice((a.page - 1) * a.size, a.page * a.size);
@@ -64,7 +64,7 @@ export default defineTool({
     }
     if (a.mode === "old_new") {
       const params = spec.mst ? { MST: spec.mst } : { ID: law.lawId };
-      const { data, hit } = await service("oldAndNew", params, { ttl: TTL.body, long: true }); cacheStates.push(hit ? "hit" : "miss");
+      const { data, hit, stale } = await service("oldAndNew", params, { ttl: TTL.body, long: true }); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       const root = data && typeof data === "object" ? Object.values(data).find((v) => v && typeof v === "object") : null;
       if (!root || str(root["신구법존재여부"]) === "N") return ok({ items: [], total: 0, warnings, notes: ["신구 대조 자료 없음"], cacheState: mergeCache(cacheStates), asOf: D, extra: { law } });
       const meta = (k) => { const b = root[k] || {}; return { mst: str(b["법령일련번호"]), effectiveDate: fmtDate(b["시행일자"]), promulgationDate: fmtDate(b["공포일자"]), promulgationNo: str(b["공포번호"]), revision: str(b["제개정구분명"]), current: str(b["현행여부"]) === "Y" }; };
@@ -81,7 +81,7 @@ export default defineTool({
     const dA = parseDate(a.dateA), dB = parseDate(a.dateB); if (!dA || !dB) throw invalid("dateA/dateB 필요(YYYY-MM-DD)");
     const pick = (d) => { const sel = selectVersion(r.versions, d); return sel.chosen; };
     const vA = pick(dA), vB = pick(dB);
-    const get = async (v) => { const x = await fetchArticle({ lawId: law.lawId, mst: v.mst, efYd: v.efYd, useId: false }, ref); cacheStates.push(x.hit ? "hit" : "miss"); return x.units[0] ? buildArticle(x.units[0], { lawName: law.name }) : null; };
+    const get = async (v) => { const x = await fetchArticle({ lawId: law.lawId, mst: v.mst, efYd: v.efYd, useId: false }, ref); cacheStates.push(cacheState(x)); return x.units[0] ? buildArticle(x.units[0], { lawName: law.name }) : null; };
     const [artA, artB] = await Promise.all([get(vA), get(vB)]);
     const same = vA.mst === vB.mst && vA.efYd === vB.efYd;
     const textA = artA?.text || "", textB = artB?.text || "";

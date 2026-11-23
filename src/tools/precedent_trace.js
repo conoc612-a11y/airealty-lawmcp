@@ -7,7 +7,7 @@ import { cache } from "../cache.js";
 import { fmtDate } from "../kst.js";
 import { lawLink, precedentLink, constitutionalLink } from "../links.js";
 import { invalid } from "../errors.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState } from "../envelope.js";
 
 const OVERRULE_HINT = /(변경|폐기)(하기로|한다|하였다|함)|견해를\s*변경|판례를\s*변경|더 이상 유지|유지될 수 없/;
 
@@ -18,8 +18,8 @@ export default defineTool({
   async handler(a) {
     const cacheStates = []; const warnings = [], notes = [];
     let id = a.id;
-    if (!id) { if (!a.caseNo) throw invalid("id 또는 caseNo 필요"); const r = await precedentIdByCaseNo(a.caseNo.replace(/\s+/g, "")); id = r.id; cacheStates.push(r.hit ? "hit" : "miss"); }
-    const { root, hit } = await fetchSourceBody("precedent", id); cacheStates.push(hit ? "hit" : "miss");
+    if (!id) { if (!a.caseNo) throw invalid("id 또는 caseNo 필요"); const r = await precedentIdByCaseNo(a.caseNo.replace(/\s+/g, "")); id = r.id; cacheStates.push(cacheState(r)); }
+    const { root, hit, stale } = await fetchSourceBody("precedent", id); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
     const caseNo = str(root["사건번호"]);
     const holding = cleanText(root["판시사항"] || "");
     const item = { case: { id, caseNo, title: str(root["사건명"]), court: str(root["법원명"]), date: fmtDate(str(root["선고일자"]).replace(/\D/g, "").slice(0, 8)), link: precedentLink(id), ...(holding ? { holding: holding.length > 300 ? holding.slice(0, 300) + "…" : holding } : {}) } };
@@ -37,7 +37,7 @@ export default defineTool({
     if (a.include.includes("incoming") && caseNo) {
       const key = "incoming:" + caseNo; let inc = cache.get(key);
       if (!inc) {
-        const r = await search("prec", { search: 2, query: caseNo, display: 50 }, { rowKeys: ["prec"], ttl: TTL.incoming }); cacheStates.push(r.hit ? "hit" : "miss");
+        const r = await search("prec", { search: 2, query: caseNo, display: 50 }, { rowKeys: ["prec"], ttl: TTL.incoming }); cacheStates.push(cacheState(r));
         const rows = r.rows.filter((x) => str(x["판례일련번호"]) !== id && str(x["사건번호"]) !== caseNo);
         // 본문에 실제로 사건번호가 있는지 확인(검색 잡음 제외) — 상위 10건만 본문 확인
         const checked = [];
@@ -55,7 +55,7 @@ export default defineTool({
     if (a.include.includes("constitutional")) {
       const q = item.outgoing?.articles?.[0] ? `${item.outgoing.articles[0].law} ${item.outgoing.articles[0].label}` : null;
       item.constitutional = [];
-      if (q) { try { const r = await search("detc", { search: 2, query: q, display: 5 }, { rowKeys: ["Detc", "detc"] }); cacheStates.push(r.hit ? "hit" : "miss"); item.constitutional = r.rows.map((x) => ({ id: str(x["헌재결정례일련번호"]), caseNo: str(x["사건번호"]), title: str(x["사건명"]), date: fmtDate(x["종국일자"]), link: constitutionalLink(str(x["헌재결정례일련번호"])) })); notes.push(`헌재결정례는 첫 참조조문(${q})을 본문검색한 상위 5건`); } catch { warnings.push("헌재결정례 검색 실패"); } }
+      if (q) { try { const r = await search("detc", { search: 2, query: q, display: 5 }, { rowKeys: ["Detc", "detc"] }); cacheStates.push(cacheState(r)); item.constitutional = r.rows.map((x) => ({ id: str(x["헌재결정례일련번호"]), caseNo: str(x["사건번호"]), title: str(x["사건명"]), date: fmtDate(x["종국일자"]), link: constitutionalLink(str(x["헌재결정례일련번호"])) })); notes.push(`헌재결정례는 첫 참조조문(${q})을 본문검색한 상위 5건`); } catch { warnings.push("헌재결정례 검색 실패"); } }
     }
     const next = [{ tool: "source_get", args: { source: "precedent", id }, why: "이 판례 전문" }];
     if (item.outgoing?.cases?.[0]) next.push({ tool: "precedent_trace", args: { caseNo: item.outgoing.cases[0].caseNo }, why: "참조판례의 인용 관계" });

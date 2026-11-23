@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "airealty 법령 MCP 서버 — 법제처 국가법령정보 OPEN API(DRF) 위에 올린 clean-room 구현",
+  "description": "법제처 국가법령정보 Open API(DRF) 기반 airealty 법령 MCP 서버",
   "bin": {
     "airealty-lawmcp": "src/index.js"
   },

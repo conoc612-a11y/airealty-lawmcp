@@ -13,7 +13,7 @@
 claude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --header "Authorization: Bearer <발급받은 토큰>"
 ```
 
-토큰은 운영자(`conoc612@gmail.com`)에게 요청하면 사용자별로 발급됩니다. 토큰마다 초당 2회·버스트 10회·하루 2,000회(`tools/call` 기준)로 제한되며, 넘으면 `429` 와 `Retry-After` 를 돌려줍니다.
+토큰은 운영자(`conoc@naver.com`)에게 요청하면 사용자별로 발급됩니다. 토큰마다 초당 2회·버스트 10회·하루 2,000회(`tools/call` 기준)로 제한되며, 넘으면 `429` 와 `Retry-After` 를 돌려줍니다.
 Claude 앱(claude.ai·Desktop)에서는 **설정 → 커넥터 → 커스텀 커넥터 추가** 에 같은 URL 을 넣고 요청 헤더 `Authorization: Bearer <토큰>` 을 지정합니다(요청 헤더 입력은 조직 Owner 에게만 보이는 베타 기능입니다).
 
 ### 2. 로컬 설치(자기 법제처 키) — 한도를 혼자 씁니다
@@ -28,7 +28,11 @@ Claude 앱(claude.ai·Desktop)에서는 **설정 → 커넥터 → 커스텀 커
 ## 도구
 
 코어 12(항상 노출): `statute_find` `article_get` `statute_outline` `annex_get` `statute_history` `source_search` `source_get` `citation_audit` `precedent_trace` `contract_risk_scan` `research_run` `toolbox`
-카탈로그 12(`toolbox` 로 호출): `term_lookup` `abbreviation_list` `change_feed` `jo_code` `article_refs` `link_build` `precedent_similar` `ordinance_link` `admin_rule_diff` `semantic_article_search` `english_statute` `article_with_cases`
+카탈로그 15(`toolbox` 로 호출): `term_lookup` `abbreviation_list` `change_feed` `jo_code` `article_refs` `link_build` `precedent_similar` `ordinance_link` `admin_rule_diff` `semantic_article_search` `english_statute` `article_with_cases` `legal_calc` `caseno_verify` `case_search`
+
+- `legal_calc` — 기간 만료일(민법 제157조·제159조~제161조), 기간 일수, 지연손해금을 로컬에서 계산하고 근거 조문을 반환한다. 공휴일 내장표(2025~2027)는 `extraHolidays`로 보충할 수 있다.
+- `caseno_verify` — 사건번호 형식 검증(연도+사건부호+일련번호)과 법제처 판례 DB 1차 존재 확인. 업스트림 부분 일치(뒷자리만 같은 다른 부호)를 엄격 비교로 제외한다. 최종 진위는 대법원 사법정보공개포털(캡차)에서 사용자가 직접 확인.
+- `case_search` — 사무소 과거 사건 문서 키워드 검색. 환경변수 `LAWMCP_CASES_DIR`(절대경로)에 지정한 폴더의 .txt·.md·.csv·.json·.xml·.hwpx 파일을 스캔해 등장 수로 순위를 매긴다(로컬 읽기 전용·외부 전송 없음).
 
 `research_run` 시나리오: `rent_dispute` `housing_subscription` `redevelopment_procedure` `brokerage_duty` `zoning_check` `tax_on_transfer` `contract_check` `version_at` `statute_map` `amendment_watch`.
 `source_search` 원천 20종 중 특별행정심판 2종은 `acr_adjudication`·`civil_service_appeal`. `term_lookup` 모드: `define` `from_everyday` `to_everyday` `articles`.
@@ -40,7 +44,7 @@ Claude 앱(claude.ai·Desktop)에서는 **설정 → 커넥터 → 커스텀 커
 
 ```bash
 npm install
-npm test                            # 빌드 검사(tools/list ≤13KB · 코어 12 · 카탈로그 12) + 단위 테스트(모의 업스트림, 네트워크 없음)
+npm test                            # 빌드 검사(tools/list ≤13KB · 코어 12 · 카탈로그 15) + 단위 테스트(모의 업스트림, 네트워크 없음)
 node src/index.js                   # stdio MCP
 node src/http-server.js             # Streamable HTTP 127.0.0.1:3457/mcp (POST 전용, GET/DELETE 405, /healthz)
 LAWMCP_LIVE_URL=http://127.0.0.1:3457/mcp npm run test:live   # 실업스트림 B1~B11(서버 떠 있어야 함)
@@ -69,7 +73,7 @@ node tools/bench.js --out bench.json                           # cold start 5회
 ## 구조
 
 `src/drf.js`(호출·버킷·재시도·차단기·백그라운드 레인) · `cache.js` · `diskcache.js` · `article_index.js`(조문 번호 색인) · `hierarchy_cache.js`(체계도 요약) · `prewarm.js` · `dictionary.js`(법령명 사전) · `resolver.js`(이름 해석) · `versions.js`(판 선택) · `articles.js`(조문 구조화) ·
-`citations.js`+`casenos.js`(인용 추출) · `sources.js`(원천 20종) · `risk/`(문서 위험 규칙·엔진) · `tools/*`(도구) · `registry.js` · `stdio.js` · `http-server.js` · `auth.js`(토큰·토큰별 한도).
+`citations.js`+`casenos.js`(인용 추출) · `sources.js`(원천 20종) · `holidays.js`(공휴일 내장표) · `legalcalc.js`(기간·이자 엔진) · `risk/`(문서 위험 규칙·엔진) · `tools/*`(도구) · `registry.js` · `stdio.js` · `http-server.js` · `auth.js`(토큰·토큰별 한도).
 
 ## 개인정보·출처
 

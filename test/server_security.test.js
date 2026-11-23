@@ -16,7 +16,8 @@ import { _setDictionary } from "../src/dictionary.js";
 const FAKE = "FAKEKEYMARKER7x9q";
 const here = dirname(fileURLToPath(import.meta.url));
 let server, port;
-before(async () => { server = createHttpServer(); await new Promise((r) => server.listen(0, "127.0.0.1", r)); port = server.address().port; });
+// 예열 백그라운드 호출이 이 파일의 모의 fetch 를 침범해 재시도 카운트 등을 흔드는 레이스가 있었다(간헐적) — 테스트 서버에서는 끈다.
+before(async () => { process.env.LAWMCP_PREWARM = "0"; server = createHttpServer(); await new Promise((r) => server.listen(0, "127.0.0.1", r)); port = server.address().port; });
 after(() => server.close());
 
 const post = (body, headers = {}) => fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
@@ -41,15 +42,15 @@ test("HTTP: GET/DELETE 405(+Allow), 잘못된 경로 404, GET 후 POST 200, heal
   assert.equal((await post({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }, { origin: "http://localhost:3000" })).status, 200);
 });
 
-test("tools/list ≤ 13KB · 코어 12 · 카탈로그 12 · 이전 서버 이름과 교집합 0", () => {
+test("tools/list ≤ 13KB · 코어 12 · 카탈로그 15 · 이전 서버 이름과 교집합 0", () => {
   assert.ok(TOOL_LIST_BYTES <= 13 * 1024, `${TOOL_LIST_BYTES}B`);
-  assert.equal(CORE_TOOLS.length, 12); assert.equal(CATALOG_TOOLS.length, 12);
+  assert.equal(CORE_TOOLS.length, 12); assert.equal(CATALOG_TOOLS.length, 15);
   const p = join(here, "..", "forbidden_tool_names.txt");
   if (existsSync(p)) { const forbidden = new Set(readFileSync(p, "utf8").split(/\r?\n/).map((s) => s.trim()).filter(Boolean)); assert.equal(forbidden.size, 104); for (const t of [...CORE_TOOLS, ...CATALOG_TOOLS]) assert.ok(!forbidden.has(t.name), t.name); }
 });
 
 test("toolbox: list/describe/call, 코어 이름 call 거부, 스키마 위반 INVALID_INPUT, list p50 ≤ 5ms", async () => {
-  const l = await toolbox.invoke({ action: "list" }); assert.equal(l.ok, true); assert.equal(l.items.length, 12);
+  const l = await toolbox.invoke({ action: "list" }); assert.equal(l.ok, true); assert.equal(l.items.length, 15);
   const q = await toolbox.invoke({ action: "list", query: "조문코드 변환" }); assert.equal(q.items[0].name, "jo_code");
   const d = await toolbox.invoke({ action: "describe", name: "jo_code" }); assert.ok(d.items[0].inputSchema.properties.input);
   const c = await toolbox.invoke({ action: "call", name: "jo_code", args: { input: "제38조의2" } }); assert.equal(c.items[0].code, "003802");
@@ -84,13 +85,20 @@ test("재시도·레이트리밋: HTML 응답 재시도 후 성공, 인증 오�
   _setApiKey("k1234567"); drfTest.reset(); cache.clear();
   const origFetch = globalThis.fetch; const origBackoff = settings.backoffMs; settings.backoffMs = 5;
   let n = 0; const stamps = [];
-  globalThis.fetch = async () => { n++; stamps.push(Date.now()); if (n === 1) return new Response("<html>점검</html>", { status: 200 }); return new Response(JSON.stringify({ LawSearch: { totalCnt: "0" } }), { status: 200 }); };
+  // 이전 테스트가 남긴 백그라운드 잔여 호출이 모의 fetch 창에 끼어드는 레이스가 있었다(간헐적) —
+  // 이 테스트가 의도한 호출(query=x1)만 모의·카운트하고, 잡음 호출은 인증 실패 응답으로 즉시 종료시킨다.
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes("query=x1")) return new Response(JSON.stringify({ result: "fail", msg: "auth" }), { status: 200 });
+    n++; stamps.push(Date.now());
+    if (n === 1) return new Response("<html>점검</html>", { status: 200 });
+    return new Response(JSON.stringify({ LawSearch: { totalCnt: "0" } }), { status: 200 });
+  };
   try {
     const { call } = await import("../src/drf.js");
     const d = await call("lawSearch.do", { target: "eflaw", query: "x1" }); assert.equal(d.LawSearch.totalCnt, "0"); assert.equal(n, 2);
-    n = 0; globalThis.fetch = async () => { n++; return new Response(JSON.stringify({ result: "fail", msg: "auth" }), { status: 200 }); };
+    n = 0; globalThis.fetch = async (url) => { if (!String(url).includes("query=x2")) return new Response(JSON.stringify({ result: "fail", msg: "auth" }), { status: 200 }); n++; return new Response(JSON.stringify({ result: "fail", msg: "auth" }), { status: 200 }); };
     await assert.rejects(() => call("lawSearch.do", { target: "eflaw", query: "x2" }), (e) => e.code === "UPSTREAM_AUTH"); assert.equal(n, 1, "인증 오류는 재시도 없음");
-    n = 0; stamps.length = 0; globalThis.fetch = async () => { n++; stamps.push(Date.now()); return new Response(JSON.stringify({ LawSearch: { totalCnt: "0" } }), { status: 200 }); };
+    n = 0; stamps.length = 0; globalThis.fetch = async (url) => { if (!/[?&]query=q\d+$/.test(String(url))) return new Response(JSON.stringify({ result: "fail", msg: "auth" }), { status: 200 }); n++; stamps.push(Date.now()); return new Response(JSON.stringify({ LawSearch: { totalCnt: "0" } }), { status: 200 }); };
     await Promise.all(Array.from({ length: 16 }, (_, i) => call("lawSearch.do", { target: "eflaw", query: `q${i}` })));
     const windowMax = Math.max(...stamps.map((t) => stamps.filter((s) => s >= t && s < t + 1000).length));
     assert.ok(windowMax <= settings.burst + settings.ratePerSec, `1초 창 최대 ${windowMax}`);

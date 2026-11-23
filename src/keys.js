@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const ROOT = import.meta.url ? join(dirname(fileURLToPath(import.meta.url)), "..", "..") : null; // Workers 번들엔 import.meta.url 이 없다 — 환경변수만
 export const KEY_NAME = "openlaw_API_KEY";
 let cached;
 
@@ -24,7 +24,7 @@ function fromFile(path, name) {
 /** @returns {string|undefined} 인증값(없으면 undefined — 서버는 뜨고 호출 시 UPSTREAM_AUTH) */
 export function apiKey() {
   if (cached !== undefined) return cached || undefined;
-  const v = process.env[KEY_NAME] || fromFile(join(ROOT, "keys.env"), KEY_NAME) || fromFile(join(ROOT, "tools", "keys.env"), KEY_NAME);
+  const v = process.env[KEY_NAME] || (ROOT && (fromFile(join(ROOT, "keys.env"), KEY_NAME) || fromFile(join(ROOT, "tools", "keys.env"), KEY_NAME)));
   cached = v || "";
   return v;
 }

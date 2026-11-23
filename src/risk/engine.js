@@ -1,11 +1,7 @@
 // 문서 위험 분석 엔진 (SPEC §5). API 호출 없음. 규칙 데이터(rules.json)의 판정 요소를 조항 단위로 찾는다.
 // 탐지 방식은 자체 설계: 조항 분할 → 조항 안의 문장 묶음에서 "요소 용어 집합"의 AND(각 집합은 OR) + 제외 용어 + 수치 검사.
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { lawLink } from "../links.js";
-
-const RULES = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "rules.json"), "utf8"));
+import RULES from "./rules.json" with { type: "json" }; // 번들(Workers)에도 실리게 파일 읽기 대신 JSON import
 export const RULE_DATA = RULES;
 
 // ── 조항 분할: "제N조(제목)" 머리, "N." 번호 머리, "[특약]" 류 머리, 빈 줄 ──

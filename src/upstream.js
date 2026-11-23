@@ -22,20 +22,27 @@ export function unwrapList(data, rowKeys) {
   return { rows, total: total ?? (rows.length ? rows.length : 0), page: toInt(root.page) || 1 };
 }
 
-/** 캐시 거쳐 호출. meta.cache 를 호출자가 알 수 있게 {data, hit} 로. */
+/** 캐시 거쳐 호출. meta.cache 를 호출자가 알 수 있게 {data, hit, stale?} 로 — 업스트림 실패 시 만료 캐시로 답하면 stale. */
 export async function cached(path, params, ttl, opts = {}) {
   const key = "drf:" + requestKey(path, params);
   const hit = cache.get(key);
   if (hit !== undefined) return { data: hit, hit: true };
-  const data = await call(path, params, opts);
-  cache.set(key, data, ttl);
-  return { data, hit: false };
+  try {
+    const data = await call(path, params, opts);
+    cache.set(key, data, ttl);
+    return { data, hit: false };
+  } catch (e) {
+    // 오프라인 폴백 — 업스트림 실패 시 48시간 이내 만료 캐시를 스타일 응답(초과·없으면 원래 오류)
+    const stale = cache.getStale(key);
+    if (stale !== undefined) return { data: stale.value, hit: false, stale: true };
+    throw e;
+  }
 }
 
 /** lawSearch.do 목록. */
 export async function search(target, params, { ttl = TTL.list, rowKeys, long } = {}) {
-  const { data, hit } = await cached("lawSearch.do", { target, ...params }, ttl, { long });
-  return { ...unwrapList(data, rowKeys), hit, raw: data };
+  const { data, hit, stale } = await cached("lawSearch.do", { target, ...params }, ttl, { long });
+  return { ...unwrapList(data, rowKeys), hit, stale: !!stale, raw: data };
 }
 
 /** lawService.do 본문. */

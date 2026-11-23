@@ -39,7 +39,7 @@ function fromDictionary(norm) {
 
 async function fromUpstream(name) {
   const r = await search("eflaw", { query: name, nw: 3, display: 100 }, { rowKeys: ["law"] });
-  return { cands: r.rows.map((x) => { const l = lawRow(x); return { name: l.name, kind: l.kind, lawId: l.lawId, mst: l.mst, effectiveDate: l.effectiveDate, status: "current" }; }), hit: r.hit };
+  return { cands: r.rows.map((x) => { const l = lawRow(x); return { name: l.name, kind: l.kind, lawId: l.lawId, mst: l.mst, effectiveDate: l.effectiveDate, status: "current" }; }), hit: r.hit, stale: !!r.stale };
 }
 
 export const matchTypeOf = (tier) => (tier === 0 ? "exact" : tier === 2 ? "prefix" : "contains");
@@ -60,13 +60,13 @@ export async function resolveLawName(input, opts = {}) {
   const expanded = expandAbbreviation(raw);
   const normEx = expanded ? normalizeName(expanded) : norm;
   let cands = fromDictionary(normEx) || [];
-  let hit = true;
+  let hit = true; let stale = false;
   if (!cands.some((c) => normalizeName(c.name) === normEx)) {
     // 사전에 정확 일치가 없으면 업스트림으로 보충(사전이 비었거나 오래됐을 수 있다)
-    try { const u = await fromUpstream(expanded || raw); hit = u.hit; const seen = new Set(cands.map((c) => c.lawId)); for (const c of u.cands) if (!seen.has(c.lawId)) cands.push(c); } catch (e) { if (!cands.length) throw e; }
+    try { const u = await fromUpstream(expanded || raw); hit = u.hit; stale = stale || !!u.stale; const seen = new Set(cands.map((c) => c.lawId)); for (const c of u.cands) if (!seen.has(c.lawId)) cands.push(c); } catch (e) { if (!cands.length) throw e; }
   }
   const ranked = sortCandidates(normEx, cands);
-  if (opts.list) return { candidates: ranked, cache: hit ? "hit" : "miss", expandedFrom: expanded ? raw : undefined };
+  if (opts.list) return { candidates: ranked, cache: stale ? "stale" : hit ? "hit" : "miss", expandedFrom: expanded ? raw : undefined };
   if (!ranked.length) throw new LawError("LAW_NOT_FOUND", `법령을 찾지 못함: ${raw}`, { hint: "statute_find 로 이름을 확인하세요" });
   const top = ranked[0];
   if (top.tier !== 0 && ranked.length > 1 && ranked[1].tier === top.tier && KIND_RANK(ranked[1].kind) === KIND_RANK(top.kind)) {
@@ -75,7 +75,7 @@ export async function resolveLawName(input, opts = {}) {
   const { tier, ...res } = top;
   const out = { ...res, matchType: matchTypeOf(tier), inputName: raw, expandedFrom: expanded ? raw : undefined };
   cache.set(ckey, out, Math.min(TTL.resolve, msUntilKstMidnight()));
-  return { ...out, cache: hit ? "hit" : "miss" };
+  return { ...out, cache: stale ? "stale" : hit ? "hit" : "miss" };
 }
 
 /**

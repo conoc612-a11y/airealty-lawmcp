@@ -45,8 +45,8 @@ export function rangeOf(index) {
 async function fetchBody(access, { background }) {
   const params = access.useId ? { ID: access.lawId } : { MST: access.mst, efYd: access.efYd };
   if (background) return { body: await call("lawService.do", { target: "eflaw", ...params }, { long: true, background: true }), hit: false };
-  const { data, hit } = await service("eflaw", params, { ttl: TTL.body, long: true });
-  return { body: data, hit };
+  const { data, hit, stale } = await service("eflaw", params, { ttl: TTL.body, long: true });
+  return { body: data, hit, stale: !!stale };
 }
 
 /**
@@ -62,7 +62,7 @@ export async function getArticleIndex(access, ver = {}, { allowBuild = true, bac
     mem.set(key, { index: d.value, savedAt: d.savedAt });
     if (d.ageMs < INDEX_TTL) return { index: d.value, source: "disk", hit: true };
     if (allowBuild) rebuild(key, access, ver, { background: true }).catch(() => {});
-    return { index: d.value, source: "stale", hit: true };
+    return { index: d.value, source: "stale", hit: true, stale: true };
   }
   if (!allowBuild) return { index: null, source: null, hit: false };
   return rebuild(key, access, ver, { background });
@@ -71,12 +71,12 @@ export async function getArticleIndex(access, ver = {}, { allowBuild = true, bac
 function rebuild(key, access, ver, { background }) {
   if (building.has(key)) return building.get(key);
   const p = (async () => {
-    const { body, hit } = await fetchBody(access, { background });
+    const { body, hit, stale } = await fetchBody(access, { background });
     const index = buildIndex(body, { lawId: access.lawId, mst: ver.mst ?? access.mst, efYd: ver.efYd ?? access.efYd });
     const savedAt = Date.now();
     mem.set(key, { index, savedAt });
     writeDisk(BUCKET, key, index, savedAt);
-    return { index, source: "built", hit };
+    return { index, source: "built", hit, stale: !!stale };
   })().finally(() => building.delete(key));
   building.set(key, p);
   return p;

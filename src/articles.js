@@ -79,16 +79,16 @@ export async function fetchArticle({ lawId, mst, efYd, useId }, ref) {
   const JO = toJoCode(ref);
   if (!JO) throw new LawError("INVALID_INPUT", "조문 번호 범위 밖", { retryable: false });
   const params = useId ? { ID: lawId, JO } : { MST: mst, efYd, JO };
-  const { data, hit } = await service("eflaw", params, { ttl: TTL.body });
+  const { data, hit, stale } = await service("eflaw", params, { ttl: TTL.body });
   const units = articleUnits(data).filter((u) => parseInt(digits(u["조문번호"]), 10) === ref.article && (parseInt(digits(u["조문가지번호"]) || "0", 10) || 0) === (ref.branch || 0));
-  return { units, meta: lawMetaFromBody(data), hit, raw: data };
+  return { units, meta: lawMetaFromBody(data), hit, stale: !!stale, raw: data };
 }
 
 /** 법령 전체 본문(목차·전체 조문·별표·부칙). 큰 응답이라 20초 타임아웃. */
 export async function fetchFullBody({ lawId, mst, efYd, useId }) {
   const params = useId ? { ID: lawId } : { MST: mst, efYd };
-  const { data, hit } = await service("eflaw", params, { ttl: TTL.body, long: true });
-  return { body: data, hit };
+  const { data, hit, stale } = await service("eflaw", params, { ttl: TTL.body, long: true });
+  return { body: data, hit, stale: !!stale };
 }
 
 /** 유효 조문 범위와 가까운 조문(없는 조문 안내용). */

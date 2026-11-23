@@ -4,7 +4,7 @@ import { SOURCES, SOURCE_NAMES } from "../sources.js";
 import { search } from "../upstream.js";
 import { parseDate } from "../kst.js";
 import { invalid, isLawError } from "../errors.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState } from "../envelope.js";
 
 const sourceEnum = z.enum(SOURCE_NAMES);
 
@@ -42,7 +42,7 @@ export async function searchSource(source, a) {
     if (source === "precedent" && it.kind === "판결") delete it.kind; // 기본값 생략(notes 에 명시)
     for (const k of Object.keys(it)) if (it[k] === undefined || it[k] === "" || it[k] === null) delete it[k];
   }
-  return { source, total: r.total, items, hit: r.hit, notes };
+  return { source, total: r.total, items, hit: r.hit, stale: !!r.stale, notes };
 }
 
 export default defineTool({
@@ -71,7 +71,7 @@ export default defineTool({
       if (r.items[0] && nextFor(r.items[0])) next.push(nextFor(r.items[0]));
       if (hasMore) next.push({ tool: "source_search", args: { source: r.source, query: a.query, page: a.page + 1, size: a.size, field: a.field, sort: a.sort }, why: "다음 페이지" });
       const items = r.items.map(({ source, ...rest }) => rest); // 단일 원천: 항목마다 source 를 반복하지 않고 봉투에 한 번
-      return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore }, warnings, notes, cacheState: r.hit ? "hit" : "miss", next, extra: { source: r.source } });
+      return ok({ items, total: r.total, page: { no: a.page, size: a.size, hasMore }, warnings, notes, cacheState: cacheState(r), next, extra: { source: r.source } });
     }
     const groups = results.map((r) => {
       if (r.error) { const e = isLawError(r.error) ? r.error.toJSON() : { code: "UPSTREAM_UNAVAILABLE", message: "검색 실패", retryable: true }; warnings.push(`${r.source}: ${e.code} ${e.message}`); return { source: r.source, total: null, items: [], error: e }; }
@@ -83,6 +83,6 @@ export default defineTool({
     for (let i = 0; i < maxLen; i++) for (const g of groups) if (g.items[i]) merged.push(g.items[i]);
     notes.push("병합 방식: 각 원천의 순위를 유지한 채 상위부터 교차로 섞음(날짜순 아님)");
     const next = merged.slice(0, 1).map(nextFor).filter(Boolean);
-    return ok({ items: groups, total: groups.reduce((s, g) => s + (g.total || 0), 0), warnings, notes, cacheState: mergeCache(results.map((r) => (r.error ? null : r.hit ? "hit" : "miss"))), next, extra: { merged } });
+    return ok({ items: groups, total: groups.reduce((s, g) => s + (g.total || 0), 0), warnings, notes, cacheState: mergeCache(results.map((r) => (r.error ? null : cacheState(r)))), next, extra: { merged } });
   },
 });

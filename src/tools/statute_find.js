@@ -7,7 +7,7 @@ import { listVersions, selectVersion } from "../versions.js";
 import { lawLink } from "../links.js";
 import { parseDate } from "../kst.js";
 import { invalid, isLawError } from "../errors.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState as cacheStateOf } from "../envelope.js";
 
 const KINDS_ORDER = ["법률", "대통령령", "총리령", "부령", "규칙"];
 
@@ -58,7 +58,7 @@ export default defineTool({
       const norm = normalizeName(q);
       let cands = dictionary().entries.map((e) => ({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, statusCode: "현행" }));
       let cacheState = "hit";
-      if (!cands.length) { const r = await search("eflaw", { query: q, nw: 3, display: 100 }, { rowKeys: ["law"] }); cands = r.rows.map(lawRow); cacheState = r.hit ? "hit" : "miss"; }
+      if (!cands.length) { const r = await search("eflaw", { query: q, nw: 3, display: 100 }, { rowKeys: ["law"] }); cands = r.rows.map(lawRow); cacheState = cacheStateOf(r); }
       let ranked = sortCandidates(norm, cands);
       if (a.kinds?.length) ranked = ranked.filter((c) => a.kinds.includes(c.kind));
       const total = ranked.length;
@@ -102,6 +102,6 @@ export default defineTool({
       { tool: "article_get", args: { lawId: items[0].lawId }, why: `${items[0].name} 목차(조문 번호·제목)` },
       { tool: "statute_outline", args: { lawId: items[0].lawId, view: "hierarchy" }, why: "상하위 법령 구조" },
     ] : [];
-    return ok({ items, total, page: { no: a.page, size: a.size, hasMore: a.page * a.size < rows.length }, notes, warnings, cacheState: r.hit ? "hit" : "miss", next });
+    return ok({ items, total, page: { no: a.page, size: a.size, hasMore: a.page * a.size < rows.length }, notes, warnings, cacheState: cacheStateOf(r), next });
   },
 });

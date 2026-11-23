@@ -8,7 +8,7 @@ import { fetchFullBody, tocUnits } from "../articles.js";
 import { articleLabel, toJoCode } from "../jo.js";
 import { parseArticleRef } from "../jo.js";
 import { lawLink, adminRuleLink } from "../links.js";
-import { mergeCache, bytesOf } from "../envelope.js";
+import { mergeCache, bytesOf, cacheState } from "../envelope.js";
 import { invalid } from "../errors.js";
 import { readHierarchy, writeHierarchy, refreshHierarchy, relatedRows } from "../hierarchy_cache.js";
 import { loadDictionarySync } from "../dictionary.js";
@@ -99,7 +99,7 @@ export default defineTool({
     const { law, access } = loc; const cacheStates = [...loc.cacheStates]; const warnings = [...loc.warnings]; const notes = [];
     const nextArticle = (label) => ({ tool: "article_get", args: { lawId: law.lawId, articles: [label] }, why: `${law.name} ${label} 원문` });
     if (a.view === "toc") {
-      const { body, hit } = await fetchFullBody(access); cacheStates.push(hit ? "hit" : "miss");
+      const { body, hit, stale } = await fetchFullBody(access); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       const toc = tocUnits(body); const tree = []; let cur = null;
       for (const t of toc) { if (t.heading) { cur = { heading: t.heading, articles: [] }; tree.push(cur); } else { if (!cur) { cur = { heading: "", articles: [] }; tree.push(cur); } cur.articles.push({ label: t.label, title: t.title, ...(t.status ? { status: t.status } : {}) }); } }
       const first = toc.find((t) => t.label);
@@ -112,7 +112,7 @@ export default defineTool({
       const disk = readHierarchy(ident);
       let tree, related = null, haveStmd = false;
       if (disk && disk.tree) {
-        cacheStates.push("hit"); tree = disk.tree; related = disk.related; haveStmd = true;
+        cacheStates.push(disk.stale ? "stale" : "hit"); tree = disk.tree; related = disk.related; haveStmd = true;
         if (disk.stale) { refreshHierarchy(ident, summarizeTree, { background: true }).catch(() => {}); notes.push("체계도는 디스크 캐시(7일 지남)를 먼저 쓰고 뒤에서 갱신 중"); }
       } else {
         const stmdP = service("lsStmd", { MST: access.mst }, { ttl: TTL.body, long: true }).catch(() => null);
@@ -120,9 +120,9 @@ export default defineTool({
         Promise.all([stmdP, rltP]).then(([s, r]) => { if (s || r) writeHierarchy(ident, { tree: s ? summarizeTree(s.data) : null, related: r ? relatedRows(r.rows) : [] }); }).catch(() => {});
         const budgetMs = +process.env.LAWMCP_HIERARCHY_BUDGET_MS || 1200;
         const stmd = await Promise.race([stmdP, new Promise((res) => setTimeout(() => res("pending"), budgetMs))]);
-        if (stmd && stmd !== "pending") { cacheStates.push(stmd.hit ? "hit" : "miss"); tree = summarizeTree(stmd.data); haveStmd = true; }
+        if (stmd && stmd !== "pending") { cacheStates.push(cacheState(stmd)); tree = summarizeTree(stmd.data); haveStmd = true; }
         const rlt = await rltP;
-        if (rlt) { cacheStates.push(rlt.hit ? "hit" : "miss"); related = relatedRows(rlt.rows); }
+        if (rlt) { cacheStates.push(cacheState(rlt)); related = relatedRows(rlt.rows); }
       }
       if (!haveStmd) {
         tree = { law: {}, upper: [], lower: { decree: [], rule: [] }, adminRules: { total: null, items: [] }, ordinances: { total: null } };
@@ -153,7 +153,7 @@ export default defineTool({
     if (a.view === "delegation") {
       const onlyRef = a.article ? parseArticleRef(a.article) : null;
       if (a.article && !onlyRef) throw invalid(`조문 표기를 읽을 수 없음: ${a.article}`);
-      const { data, hit } = await service("thdCmp", { MST: access.mst, knd: a.delegationKind === "cited" ? 1 : 2 }, { ttl: TTL.body, long: true }); cacheStates.push(hit ? "hit" : "miss");
+      const { data, hit, stale } = await service("thdCmp", { MST: access.mst, knd: a.delegationKind === "cited" ? 1 : 2 }, { ttl: TTL.body, long: true }); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       const root = data && typeof data === "object" ? Object.values(data).find((v) => v && typeof v === "object") : null;
       if (str(root?.["기본정보"]?.["삼단비교존재여부"]) === "N") return ok({ items: [], total: 0, warnings, notes: ["이 법령에는 3단비교(위임 관계) 자료가 없습니다"], cacheState: mergeCache(cacheStates), asOf: D, extra: { law } });
       const items = delegationTree(data, law.name, onlyRef);
@@ -166,7 +166,7 @@ export default defineTool({
       return ok({ items: pageItems, total, page: { no: a.page, size: a.size, hasMore: a.page * a.size < total }, warnings, notes, cacheState: mergeCache(cacheStates), asOf: D, next, extra: { law } });
     }
     // related
-    const r = await search("lsRlt", { ID: law.lawId }, { rowKeys: ["법령"], ttl: TTL.body }); cacheStates.push(r.hit ? "hit" : "miss");
+    const r = await search("lsRlt", { ID: law.lawId }, { rowKeys: ["법령"], ttl: TTL.body }); cacheStates.push(cacheState(r));
     const base = r.rows[0] || {};
     const items = asList(base["관련법령"]).map((x) => ({ name: str(x["관련법령명"]), lawId: str(x["관련법령ID"]), relation: str(x["법령간관계"]), relationCode: str(x["법령간관계코드"]), link: lawLink(str(x["관련법령명"])) })).filter((x) => x.name);
     const total = items.length; const pageItems = items.slice((a.page - 1) * a.size, a.page * a.size);

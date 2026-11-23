@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 빌드 검사: tools/list ≤ 13KB, 코어 ≤ 12, 이름 충돌(이전 서버 104개 이름) 0, 카탈로그 12, 설명·스키마 존재.
+// 빌드 검사: tools/list ≤ 13KB, 코어 ≤ 12, 이름 충돌(이전 서버 104개 이름) 0, 카탈로그 15, 설명·스키마 존재.
 import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -11,7 +11,7 @@ const check = (cond, msg) => { if (!cond) failures.push(msg); };
 
 check(CORE_TOOLS.length <= 12, `코어 도구 ${CORE_TOOLS.length}개 > 12`);
 check(TOOL_LIST_BYTES <= 13 * 1024, `tools/list ${TOOL_LIST_BYTES}B > 13KB`);
-check(CATALOG_TOOLS.length === 12, `카탈로그 도구 ${CATALOG_TOOLS.length}개 ≠ 12`);
+check(CATALOG_TOOLS.length === 15, `카탈로그 도구 ${CATALOG_TOOLS.length}개 ≠ 15`);
 const names = [...CORE_TOOLS, ...CATALOG_TOOLS].map((t) => t.name);
 check(new Set(names).size === names.length, "도구 이름 중복");
 for (const t of [...CORE_TOOLS, ...CATALOG_TOOLS]) {

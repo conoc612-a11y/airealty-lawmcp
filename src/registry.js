@@ -1,4 +1,4 @@
-// 도구 레지스트리 — 코어 12 + 카탈로그 12. tools/list 항목은 미리 만들어 둔다(서버 인스턴스 생성 비용 최소화).
+// 도구 레지스트리. tools/list 항목은 미리 만들어 둔다(서버 인스턴스 생성 비용 최소화).
 import statute_find from "./tools/statute_find.js";
 import article_get from "./tools/article_get.js";
 import statute_outline from "./tools/statute_outline.js";
@@ -20,7 +20,7 @@ export { CATALOG_TOOLS };
 setCoreNames(CORE_TOOLS.map((t) => t.name));
 
 /** 도구 제목(Claude 커넥터 리뷰 기준: title + readOnlyHint 필수). 모든 도구는 읽기 전용·외부(법제처) 조회다. */
-const TITLES = { statute_find: "법령 찾기", article_get: "조문 보기", statute_outline: "법령 구조·체계도", annex_get: "별표·서식", statute_history: "법령 연혁·판", source_search: "판례·해석례 검색", source_get: "판례·해석례 본문", citation_audit: "인용 검증", precedent_trace: "판례 추적", contract_risk_scan: "계약서 위험 점검", research_run: "법령 리서치 묶음", toolbox: "보조 도구 12종" };
+const TITLES = { statute_find: "법령 찾기", article_get: "조문 보기", statute_outline: "법령 구조·체계도", annex_get: "별표·서식", statute_history: "법령 연혁·판", source_search: "판례·해석례 검색", source_get: "판례·해석례 본문", citation_audit: "인용 검증", precedent_trace: "판례 추적", contract_risk_scan: "계약서 위험 점검", research_run: "법령 리서치 묶음", toolbox: "보조 도구" };
 /** tools/list 에 실릴 항목(미리 계산). */
 export const TOOL_LIST = CORE_TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: zodToJsonSchema(t.zod), annotations: { title: TITLES[t.name] || t.name, readOnlyHint: true } }));
 export const TOOL_LIST_BYTES = Buffer.byteLength(JSON.stringify({ tools: TOOL_LIST }), "utf8");

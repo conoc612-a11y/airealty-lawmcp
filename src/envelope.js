@@ -32,11 +32,15 @@ export function toMcp(body) {
 
 export const bytesOf = (v) => Buffer.byteLength(typeof v === "string" ? v : JSON.stringify(v), "utf8");
 
-/** 캐시 상태 합성: 전부 hit → hit, 전부 miss → miss, 섞이면 partial. */
+/** {hit, stale} → 봉투 cache 값. 업스트림 실패 후 만료 캐시로 답한 호출은 "stale". */
+export const cacheState = (r) => (r && r.stale ? "stale" : r && r.hit ? "hit" : "miss");
+
+/** 캐시 상태 합성: 전부 hit → hit, 하나라도 stale(만료 캐시 폴백) → stale, 전부 miss → miss, 섞이면 partial. */
 export function mergeCache(states) {
   const s = states.filter(Boolean);
   if (!s.length) return "miss";
   if (s.every((x) => x === "hit" || x === true)) return "hit";
+  if (s.some((x) => x === "stale")) return "stale";
   if (s.every((x) => x === "miss" || x === false)) return "miss";
   return "partial";
 }

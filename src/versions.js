@@ -4,6 +4,7 @@ import { TTL } from "./cache.js";
 import { fmtDate, todayKst } from "./kst.js";
 import { LawError, invalid } from "./errors.js";
 import { resolveLawName } from "./resolver.js";
+import { cacheState } from "./envelope.js";
 import { normalizeName } from "./dictionary.js";
 import { readDisk, writeDisk } from "./diskcache.js";
 
@@ -17,7 +18,7 @@ export async function listVersions(lawId) {
   return out0;
 }
 async function fetchVersions(lawId) {
-  const rows = []; let hit = true; let name = "", kind = "";
+  const rows = []; let hit = true; let stale = false; let name = "", kind = "";
   const fetchPage = (page) => search("eflaw", { LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" }, { rowKeys: ["law"], ttl: TTL.resolve });
   const first = await fetchPage(1);
   const pages = [first];
@@ -25,6 +26,7 @@ async function fetchVersions(lawId) {
   if (need > 1) pages.push(...(await Promise.all(Array.from({ length: need - 1 }, (_, i) => fetchPage(i + 2))))); // 나머지 페이지는 병렬
   for (const r of pages) {
     hit = hit && r.hit;
+    if (r.stale) stale = true;
     for (const x of r.rows) {
       const l = lawRow(x);
       if (!name) { name = l.name; kind = l.kind; }
@@ -34,7 +36,7 @@ async function fetchVersions(lawId) {
   const seen = new Set(); const out = [];
   for (const v of rows) { const k = v.mst + ":" + v.efYd; if (!seen.has(k) && /^\d{8}$/.test(v.efYd)) { seen.add(k); out.push(v); } }
   out.sort((a, b) => b.efYd.localeCompare(a.efYd) || b.mst.localeCompare(a.mst));
-  return { versions: out, name, kind, hit };
+  return { versions: out, name, kind, hit, stale };
 }
 
 /** 기준일 D 에 대한 적용 판과 시행예정 판. 기준일 이전 판이 없으면 LAW_NOT_FOUND(대체 금지). */
@@ -64,13 +66,13 @@ export async function resolveLaw(spec, asOfYmd) {
   if (!lawId && spec.name) { resolved = await resolveLawName(spec.name); lawId = resolved.lawId; cacheStates.push(resolved.cache); }
   if (!lawId && spec.mst) {
     // eflaw 는 MST 에 efYd 가 필수라 법령ID 를 모를 땐 law target(MST 단독 허용)으로 기본정보만 받는다(JO 지정으로 작게)
-    const { data, hit } = await service("law", { MST: spec.mst, JO: "000100" }, { long: true });
-    cacheStates.push(hit ? "hit" : "miss");
+    const { data, hit, stale } = await service("law", { MST: spec.mst, JO: "000100" }, { long: true });
+    cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
     lawId = str(data?.["법령"]?.["기본정보"]?.["법령ID"]);
     if (!lawId) throw new LawError("LAW_NOT_FOUND", `MST ${spec.mst} 에 해당하는 법령 없음`, { retryable: false });
   }
   const vl = await listVersions(lawId);
-  cacheStates.push(vl.hit ? "hit" : "miss");
+  cacheStates.push(cacheState(vl));
   if (!vl.versions.length) throw new LawError("LAW_NOT_FOUND", `법령ID ${lawId} 의 판 목록 없음`, { retryable: false });
   // 모순 검사: name 과 lawId/mst 가 같이 왔는데 다른 법령이면 INVALID_INPUT
   if (spec.name && (spec.lawId || spec.mst) && normalizeName(vl.name) !== normalizeName(spec.name) && !(resolved && resolved.lawId === lawId)) {

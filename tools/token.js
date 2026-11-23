@@ -18,8 +18,11 @@ if (cmd === "add" && /^[a-z0-9_-]{1,32}$/i.test(name || "")) {
 } else if (cmd === "revoke" && name) {
   if (!entries.some(([n]) => n === name)) { console.error(`없음: ${name}`); process.exit(1); }
   save(entries.filter(([n]) => n !== name)); console.log(`${name} 폐기 (서버가 5초 안에 반영)`);
+} else if (cmd === "secret") {
+  // Workers 시크릿 LAWMCP_TOKENS 값(name:sha256hex,…) — 화면에 찍지 말고 바로 넘긴다: node tools/token.js secret | npx wrangler secret put LAWMCP_TOKENS -c worker/wrangler.toml
+  process.stdout.write(entries.map(([n, h]) => `${n}:${h}`).join(","));
 } else if (cmd === "list") {
   console.log(entries.length ? entries.map(([n]) => n).join("\n") : "(없음)"); console.log(`파일: ${file}`);
 } else {
-  console.error("사용: node tools/token.js add <name> | revoke <name> | list   (name: 영숫자·_·- 32자 이하)"); process.exit(2);
+  console.error("사용: node tools/token.js add <name> | revoke <name> | list | secret   (name: 영숫자·_·- 32자 이하)"); process.exit(2);
 }

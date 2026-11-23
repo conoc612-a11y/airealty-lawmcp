@@ -5,7 +5,7 @@ import { service, search, str, asList } from "../upstream.js";
 import { TTL } from "../cache.js";
 import { fmtDate } from "../kst.js";
 import { LawError, invalid } from "../errors.js";
-import { paginateByBytes } from "../envelope.js";
+import { paginateByBytes, cacheState } from "../envelope.js";
 import { extractCitations } from "../citations.js";
 import { normalizeUpstreamLink } from "../links.js";
 import { dictionary } from "../dictionary.js";
@@ -27,12 +27,12 @@ export async function fetchSourceBody(source, id) {
   const def = SOURCES[source];
   if (!def?.body) throw new LawError("NOT_SUPPORTED", `${source} 는 본문 조회를 제공하지 않음(목록·링크만)`, { retryable: false });
   const params = { [def.body.idParam || "ID"]: id };
-  const { data, hit } = await service(def.body.target, params, { ttl: TTL.sourceBody, long: true });
+  const { data, hit, stale } = await service(def.body.target, params, { ttl: TTL.sourceBody, long: true });
   const root = data && typeof data === "object" ? Object.values(data).find((v) => v && typeof v === "object") : null;
   if (!root || (def.body.idKey && !str(root[def.body.idKey]) && !root[def.body.sections?.[0]])) {
     throw new LawError("SOURCE_NOT_FOUND", `${source} ${id} 본문 없음`, { retryable: false });
   }
-  return { root, hit };
+  return { root, hit, stale: !!stale };
 }
 
 /** 판례 사건번호 → ID (정확 일치만). 여러 건이면 AMBIGUOUS_NAME. */
@@ -41,7 +41,7 @@ export async function precedentIdByCaseNo(caseNo) {
   const exact = r.rows.filter((x) => str(x["사건번호"]) === caseNo);
   if (!exact.length) throw new LawError("SOURCE_NOT_FOUND", `사건번호 ${caseNo} 판례 없음`, { retryable: false });
   if (exact.length > 1) throw new LawError("AMBIGUOUS_NAME", `사건번호 ${caseNo} 에 여러 판례`, { candidates: exact.map((x) => ({ id: str(x["판례일련번호"]), court: str(x["법원명"]), date: fmtDate(x["선고일자"]), title: str(x["사건명"]) })) });
-  return { id: str(exact[0]["판례일련번호"]), hit: r.hit, row: exact[0] };
+  return { id: str(exact[0]["판례일련번호"]), hit: r.hit, stale: !!r.stale, row: exact[0] };
 }
 
 export function buildSourceDoc(source, root, id, wantSections) {
@@ -98,9 +98,9 @@ export default defineTool({
   },
   async handler(a) {
     let id = a.id; const cacheStates = [];
-    if (!id && a.caseNo) { if (a.source !== "precedent") throw invalid("caseNo 는 precedent 에서만"); const r = await precedentIdByCaseNo(a.caseNo.replace(/\s+/g, "")); id = r.id; cacheStates.push(r.hit ? "hit" : "miss"); }
+    if (!id && a.caseNo) { if (a.source !== "precedent") throw invalid("caseNo 는 precedent 에서만"); const r = await precedentIdByCaseNo(a.caseNo.replace(/\s+/g, "")); id = r.id; cacheStates.push(cacheState(r)); }
     if (!id) throw invalid("id 또는 caseNo 필요");
-    const { root, hit } = await fetchSourceBody(a.source, id); cacheStates.push(hit ? "hit" : "miss");
+    const { root, hit, stale } = await fetchSourceBody(a.source, id); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
     const doc = buildSourceDoc(a.source, root, id, a.sections);
     doc.refs = buildRefs(root, a.source);
     const warnings = [], notes = [];

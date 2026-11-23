@@ -8,7 +8,7 @@ import { search, asList, str, digits } from "../upstream.js";
 import { TTL } from "../cache.js";
 import { normalizeUpstreamLink } from "../links.js";
 import { normalizeName } from "../dictionary.js";
-import { mergeCache, paginateByBytes } from "../envelope.js";
+import { mergeCache, paginateByBytes, cacheState } from "../envelope.js";
 import { invalid } from "../errors.js";
 
 const KIND = { "별표": "table", "서식": "form", "별지": "form", "별도": "table", "부록": "table" };
@@ -74,7 +74,7 @@ export default defineTool({
       if (a.includeLower) for (const s of ["시행령", "시행규칙"]) family.add(normalizeName(`${base} ${s}`));
       const rows = [];
       for (let page = 1; page <= 10; page++) {
-        const r = await search("licbyl", { search: 2, query: base, display: 100, page }, { rowKeys: ["licbyl"], ttl: TTL.list }); cacheStates.push(r.hit ? "hit" : "miss");
+        const r = await search("licbyl", { search: 2, query: base, display: 100, page }, { rowKeys: ["licbyl"], ttl: TTL.list }); cacheStates.push(cacheState(r));
         rows.push(...r.rows); if (r.rows.length < 100 || rows.length >= (r.total || 0)) break;
       }
       const mine = rows.filter((x) => normalizeName(str(x["관련법령명"])) === normalizeName(loc.law.name));
@@ -92,12 +92,12 @@ export default defineTool({
     } else {
       loc = await locate(a, D, { prefetch: (acc) => fetchFullBody(acc) });
       cacheStates.push(...loc.cacheStates); warnings.push(...loc.warnings);
-      const { body, hit } = loc.prefetched || await fetchFullBody(loc.access); cacheStates.push(hit ? "hit" : "miss");
+      const { body, hit, stale } = loc.prefetched || await fetchFullBody(loc.access); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
       items = annexItems(body, loc.law);
       lawsUsed = [loc.law.name];
       if (!items.length && a.includeLower) {
         const lows = await lowerLaws(loc.law.name);
-        const subs = await Promise.all(lows.map(async (l) => { try { const sub = await locate({ lawId: l.lawId }, D, { prefetch: (acc) => fetchFullBody(acc) }); const b = sub.prefetched || await fetchFullBody(sub.access); cacheStates.push(b.hit ? "hit" : "miss"); return { sub, body: b.body }; } catch (e) { warnings.push(`${l.name} 별표 조회 실패: ${e.code || "오류"}`); return null; } }));
+        const subs = await Promise.all(lows.map(async (l) => { try { const sub = await locate({ lawId: l.lawId }, D, { prefetch: (acc) => fetchFullBody(acc) }); const b = sub.prefetched || await fetchFullBody(sub.access); cacheStates.push(cacheState(b)); return { sub, body: b.body }; } catch (e) { warnings.push(`${l.name} 별표 조회 실패: ${e.code || "오류"}`); return null; } }));
         for (const s of subs) if (s) { items.push(...annexItems(s.body, s.sub.law)); lawsUsed.push(s.sub.law.name); }
         if (lows.length) notes.push(`${loc.law.name}(${loc.law.kind}) 본문에는 별표·서식이 없어 ${lows.map((l) => l.name).join("·")}의 별표·서식을 보여 줍니다`);
       }

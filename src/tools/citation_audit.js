@@ -12,7 +12,7 @@ import { TTL } from "../cache.js";
 import { fmtDate, todayKst } from "../kst.js";
 import { lawLink, precedentLink } from "../links.js";
 import { isLawError, invalid } from "../errors.js";
-import { mergeCache } from "../envelope.js";
+import { mergeCache, cacheState } from "../envelope.js";
 import { isCaseNo } from "../casenos.js";
 
 const SUSPICIOUS = new Set(["ARTICLE_NOT_FOUND", "PARAGRAPH_NOT_FOUND", "LAW_NOT_FOUND", "CASE_NOT_FOUND", "CONTENT_MISMATCH", "TITLE_MISMATCH"]);
@@ -41,7 +41,7 @@ async function auditLawGroup(lawName, cits, D, threshold, cacheStates) {
   }
   const uniqRefs = []; for (const c of cits) if (!uniqRefs.some((u) => sameArticle(u, c.ref))) uniqRefs.push(c.ref);
   const fetched = new Map();
-  await Promise.all(uniqRefs.map(async (ref) => { try { const r = await fetchArticle(access, ref); cacheStates.push(r.hit ? "hit" : "miss"); fetched.set(articleLabel(ref.article, ref.branch), r); } catch (e) { fetched.set(articleLabel(ref.article, ref.branch), { error: e }); } }));
+  await Promise.all(uniqRefs.map(async (ref) => { try { const r = await fetchArticle(access, ref); cacheStates.push(cacheState(r)); fetched.set(articleLabel(ref.article, ref.branch), r); } catch (e) { fetched.set(articleLabel(ref.article, ref.branch), { error: e }); } }));
   let range = null;
   for (const c of cits) {
     const r = fetched.get(c.label);
@@ -49,7 +49,7 @@ async function auditLawGroup(lawName, cits, D, threshold, cacheStates) {
     if (!r || r.error) { c.status = "UNCHECKED"; continue; }
     if (!r.units.length) {
       // 없는 조문: 유효 범위는 조문 번호 색인(디스크 24h, 없으면 이때 한 번 만든다)에서 — 전체 본문 왕복 없음
-      if (!range) { try { const ix = await getArticleIndex(access, { mst: lawInfo.chosen.mst, efYd: lawInfo.chosen.efYd || digits(lawInfo.law.effectiveDate) }); cacheStates.push(ix.hit ? "hit" : "miss"); range = rangeOf(ix.index); } catch { range = { validRange: null }; } }
+      if (!range) { try { const ix = await getArticleIndex(access, { mst: lawInfo.chosen.mst, efYd: lawInfo.chosen.efYd || digits(lawInfo.law.effectiveDate) }); cacheStates.push(cacheState(ix)); range = rangeOf(ix.index); } catch { range = { validRange: null }; } }
       c.status = "ARTICLE_NOT_FOUND"; c.validRange = range.validRange; continue;
     }
     const art = buildArticle(r.units[0], { lawName: lawInfo.law.name, asOfYmd: D });
@@ -77,7 +77,7 @@ async function auditLawGroup(lawName, cits, D, threshold, cacheStates) {
 
 async function auditCase(c, cacheStates) {
   try {
-    const r = await search("prec", { nb: c.caseNo, display: 20 }, { rowKeys: ["prec"], ttl: TTL.sourceBody }); cacheStates.push(r.hit ? "hit" : "miss");
+    const r = await search("prec", { nb: c.caseNo, display: 20 }, { rowKeys: ["prec"], ttl: TTL.sourceBody }); cacheStates.push(cacheState(r));
     const exact = r.rows.filter((x) => str(x["사건번호"]) === c.caseNo);
     if (!exact.length) { c.status = "CASE_NOT_FOUND"; return; }
     const row = exact[0];
