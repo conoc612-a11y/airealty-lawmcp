@@ -17,14 +17,14 @@ function listFiles(root, depth, out) {
   let entries;
   try { entries = readdirSync(root, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
-    if (out.length >= 2000 || out.bytes > MAX_TOTAL) return;
+    if (out.files.length >= 2000 || out.bytes >= MAX_TOTAL) return;
     const p = join(root, e.name);
     if (e.isDirectory()) { if (depth < MAX_DEPTH && !SKIP_DIRS.has(e.name)) listFiles(p, depth + 1, out); continue; }
     if (!e.isFile() || !EXTS.has(extname(e.name).toLowerCase())) continue;
     try {
       const st = statSync(p);
-      if (st.size > MAX_FILE) continue;
-      out.push({ path: p, size: st.size, mtime: st.mtime.toISOString().slice(0, 10), name: basename(e.name) });
+      if (st.size > MAX_FILE || out.bytes + st.size > MAX_TOTAL) continue;
+      out.files.push({ path: p, size: st.size, mtime: st.mtime.toISOString().slice(0, 10), name: basename(e.name) });
       out.bytes += st.size;
     } catch {}
   }
@@ -37,11 +37,7 @@ function terms(q) {
   return words;
 }
 
-function snippet(text, termsList, span = 160) {
-  const lower = text.toLowerCase();
-  let at = -1;
-  for (const t of termsList) { const i = lower.indexOf(t.toLowerCase()); if (i >= 0 && (at < 0 || i < at)) at = i; }
-  if (at < 0) return text.slice(0, span);
+function snippet(text, at, span = 160) {
   const s = Math.max(0, at - 40);
   return (s > 0 ? "…" : "") + text.slice(s, s + span).replace(/\s+/g, " ") + "…";
 }
@@ -50,7 +46,7 @@ export default defineTool({
   name: "case_search",
   description:
     "사무소 과거 사건 문서(준비서면·신청서·판결문 등)를 키워드로 검색한다. 대상 폴더는 환경변수 LAWMCP_CASES_DIR 로 지정하며 " +
-    ".txt·.md·.csv·.json·.xml·.hwpx 파일을 스캔해 등장 수로 순위를 매긴다(외부 전송 없음, 로컬 읽기 전용).",
+    "UTF-8 텍스트(.txt·.md·.csv·.json·.xml, 평문으로 저장한 .hwpx)를 읽어 등장 수로 순위를 매긴다. 압축 HWPX는 제외한다.",
   catalog: { summary: "과거 사건 문서 로컬 키워드 검색(LAWMCP_CASES_DIR)", tags: ["사건", "검색", "로컬"], example: { query: "대항력 보증금" } },
   schema: {
     query: z.string().min(2).max(120),
@@ -60,41 +56,47 @@ export default defineTool({
   async handler(a) {
     const root = process.env.LAWMCP_CASES_DIR;
     if (!root) throw invalid("LAWMCP_CASES_DIR 환경변수에 사건 폴더 절대경로를 지정하세요(예: ~/사건)");
-    const list = { bytes: 0 };
+    const list = { files: [], bytes: 0 };
     listFiles(root, 0, list);
-    if (!list.length) return ok({ items: [], total: 0, notes: [`'${root}' 에 검색 가능한 문서가 없습니다(.txt .md .csv .json .xml .hwpx)`] });
+    if (!list.files.length) return ok({ items: [], total: 0, notes: [`'${root}' 에 검색 가능한 문서가 없습니다(.txt .md .csv .json .xml .hwpx)`] });
     const termsList = terms(a.query);
     if (!termsList.length) throw invalid("검색어는 2글자 이상 어절로 주세요");
     const maxFile = a.maxFileBytes ?? MAX_FILE;
+    const foldedTerms = termsList.map((term) => term.toLowerCase());
     const scored = [];
-    for (const f of list) {
+    for (const f of list.files) {
+      if (f.size > maxFile) continue;
       let text;
       try { text = readFileSync(f.path, "utf8"); } catch { continue; }
-      if (text.length > maxFile) continue;
+      if (extname(f.name).toLowerCase() === ".hwpx" && text.startsWith("PK")) continue;
+      const lower = text.toLowerCase(), filename = f.name.toLowerCase();
+      let first = Infinity;
       let score = 0; const hits = [];
-      for (const t of termsList) {
-        let c = 0, i = -1;
-        const lt = t.toLowerCase(), lower = text.toLowerCase();
-        while ((i = lower.indexOf(lt, i + 1)) >= 0) c++;
-        if (c > 0) { hits.push(t); score += c + (f.name.toLowerCase().includes(lt) ? 10 : 0); }
+      for (const [idx, term] of foldedTerms.entries()) {
+        let i = lower.indexOf(term);
+        if (i < 0) continue;
+        first = Math.min(first, i);
+        hits.push(termsList[idx]);
+        if (filename.includes(term)) score += 10;
+        do { score++; i = lower.indexOf(term, i + 1); } while (i >= 0);
       }
-      if (score > 0) scored.push({ file: f, score, hits, text });
+      if (score > 0) scored.push({ file: f, score, hits, excerpt: snippet(text, first) });
     }
     scored.sort((x, y) => y.score - x.score || (y.file.mtime || "").localeCompare(x.file.mtime || ""));
-    const items = scored.slice(0, a.size).map(({ file, score, hits, text }) => ({
+    const items = scored.slice(0, a.size).map(({ file, score, hits, excerpt }) => ({
       path: file.path,
       name: file.name,
       modified: file.mtime,
       score,
       matchedTerms: hits,
       missingTerms: termsList.filter((t) => !hits.includes(t)),
-      snippet: snippet(text, termsList),
+      snippet: excerpt,
     }));
     return ok({
       items,
       total: scored.length,
       notes: [
-        `스캔 폴더: ${root} · 파일 ${list.length}개 · ${Math.round(list.bytes / 1024)}KB (상한 50MB)`,
+        `스캔 폴더: ${root} · 파일 ${list.files.length}개 · ${Math.round(list.bytes / 1024)}KB (상한 50MB)`,
         "본문은 스니펫(160자)만 응답에 실고, 원문은 로컬 파일에서 직접 확인하세요",
         "임베딩 유사 검색은 아니며 키워드 등장 수 기반입니다",
       ],

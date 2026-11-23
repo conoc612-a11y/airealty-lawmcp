@@ -1,85 +1,114 @@
-# airealty-lawmcp — 법제처 국가법령정보 OPEN API 위의 법령 MCP 서버
+# AIRealty LawMCP
 
-대한민국 법령·조문·별표·연혁·판례·해석례를 Claude 등 MCP 클라이언트에서 바로 찾아보는 서버입니다.
-업스트림은 법제처 국가법령정보 공동활용 OPEN API(`open.law.go.kr`)이며, 응답은 모두 읽기 전용입니다.
+AIRealty LawMCP는 **부동산 거래·건축·세금·투자·채권추심에 특화한 읽기 전용 MCP 서버**입니다. 연결한 AI에 질문하면 대한민국 법령과 판례를 찾아줍니다. 계약 당시 시행 중이던 건축법 조문, 주택 양도에 관한 조세심판례, 투자금 반환이나 추심금 분쟁을 다룬 판결을 조회할 수 있습니다.
 
-## 연결하기 — 두 가지 방법
+**그 밖에도 대한민국 법률 전반을 검색할 수 있습니다.** 법제처 국가법령정보 공동활용 API가 제공하는 범위에서 법령명이나 쟁점으로 검색합니다. 예를 들어 근로기준법과 부당해고 판례를 찾거나 개인정보 보호법의 제3자 제공 조문을 조회할 수 있습니다. [공식 API 활용가이드](https://open.law.go.kr/LSO/openApi/guideList.do)
 
-> 단계별 설치·이용 안내(Claude Code·Claude 앱·Cursor, 자기 키 설치, 한도·오류 표): **[USER_GUIDE.md](USER_GUIDE.md)**
+## 주요 기능과 확인된 성능
 
-### 1. 호스팅 서버(토큰 필요) — 설치 없이 한 줄
+| 무엇을 맡길 수 있나요? | 어떤 결과를 받나요? |
+| --- | --- |
+| **한 질문으로 부동산 쟁점 조사** | 임대차·중개·정비사업 등 **10가지 조사 시나리오**를 제공합니다. 예를 들어 중개 의무를 물으면 관련 조문, 시행규칙 별표·서식, 판례·해석례를 단계별로 조회하고 이어서 열어 볼 자료를 제시합니다. |
+| **기준일의 조문과 인용 확인** | 계약일에 시행 중이던 조·항·호를 읽고 문서 속 인용을 점검합니다. 실조회에서 건축법 제19조, 소득세법 제89조, 민사집행법 제229조의 본문을 확인했습니다. |
+| **판례·심판례 등 20종 자료 검색** | 사건번호·법원·선고일로 판례를 식별하고 제공되는 본문과 원문 링크를 확인합니다. 실조회에서 투자금 반환 판례 일부와 취득세 조세심판례는 본문까지, 추심금 판례는 목록까지 확인했습니다. |
+| **계약서에서 다시 읽을 특약 선별** | 합성 주택임대차계약서에서 갱신요구권 포기, 차임 증액, 전입신고 제한 등 **검토 신호 10건**과 근거 조문을 반환했습니다. 같은 검사에서 표준 예시 계약서의 높은 위험도 신호는 **0건**이었습니다. |
+| **채권의 기간·이자 계산** | 시작일·종료일·원금·연이율을 넣으면 이자와 계산식을 받습니다. 원금 100만 원, 입력 연이율 5%, 365일의 검증 사례에서 계산한 이자는 **5만 원**입니다. |
+
+### 조문을 여는 데 걸린 시간
+
+| 로컬 MCP에서 측정한 구간 | 측정 횟수 | 중앙값 |
+| --- | ---: | ---: |
+| 서버 프로세스 시작부터 MCP 초기화 응답까지 | 5회 | **88ms** |
+| 법령 ID를 찾은 뒤 건축법 제19조 본문을 처음 열기 | 5회 | **449ms** |
+| 같은 조문을 다시 열기 | 55회 | **1.21ms** |
+
+2026-11-23 Windows·Node.js 24.18.0에서 법제처 HTTPS API와 로컬 MCP를 연결했습니다. 서버를 새로 시작할 때마다 조문을 한 번 열고, 같은 요청을 11회 반복했습니다. 조문 조회 시간은 클라이언트가 요청을 보내고 본문을 받을 때까지이며, AI가 답변을 작성하는 시간은 별도입니다. [상세 측정 조건과 검수 기준](PRD.md#성능-측정과-검수)
+
+### 검색·판례·계약서 처리 속도
+
+같은 PC에서 같은 요청을 반복했을 때의 중앙값입니다. 법령명 5,632건과 저장된 법제처 응답을 사용했습니다.
+
+| 작업 | 개선 전 | 개선 후 |
+| --- | ---: | ---: |
+| ‘주택’으로 법령명 추천 39건을 찾아 첫 20건 반환 | 0.71ms | **0.45ms** |
+| 주택법 제15조 반복 조회 | 0.70ms | **0.16ms** |
+| 판례 본문과 참조조문 반환 | 0.91ms | **0.28ms** |
+| 문서의 조문 인용 48개 추출 | 4.65ms | **0.38ms** |
+| 계약서 예문 15회 분량의 위험 조항 점검 | 4.75ms | **4.01ms** |
+
+이 표는 외부 API를 기다리는 시간을 제외한 로컬 처리 속도입니다. 사무소 사건 검색도 UTF-8 테스트 문서 16개를 모두 찾아 점수순으로 상위 5개와 발췌문을 반환했습니다. [입력과 반복 횟수](PRD.md#검색판례계약서-성능-비교)
+
+## 어떤 정보를 얻을 수 있나요?
+
+| 실무 질문 | 확인할 수 있는 자료 |
+| --- | --- |
+| 임차인이 갱신을 요구했다. 계약 당시 어떤 조문이 시행 중이었나? | 지정한 날짜의 주택·상가 임대차 관련 조문, 시행일, 개정 연혁. 갱신 거절처럼 쟁점이 되는 표현으로 관련 판례·해석례도 검색할 수 있습니다. |
+| 중개대상물 확인·설명 의무의 근거와 서식은 어디에 있나? | 공인중개사법과 하위 법령의 조문, 시행규칙 별표·서식 목록, 관련 해석례. |
+| **건축법**에서 건축물 용도변경의 근거 조문과 하위 규정을 찾아볼 수 있나? | 건축법과 시행령의 조문·개정 이력을 찾습니다. 용도지역별 건축 제한을 조사할 때는 국토계획법과 연계된 지자체 조례까지 살펴볼 수 있습니다. 개별 필지에 적용하려면 소재지와 용도지역을 확인합니다. |
+| **세법**에서 주택 양도소득세 비과세나 취득세 중과가 쟁점이 된 자료를 찾을 수 있나? | 소득세법·지방세법의 기준일별 조문과 관련 판례·조세심판례를 찾습니다. 국세청 해석은 목록을 검색하고 제공된 상세 링크로 원문을 확인합니다. 개별 거래의 세액 산출은 별도 계산기에서 수행합니다. |
+| **투자** 약정에서 투자금 반환이 쟁점이 된 판결을 찾고 싶다. | ‘투자금반환’으로 판례를 찾아 사건번호·법원·선고일을 확인합니다. 금융투자 관련 규정은 ‘자본시장과 금융투자업에 관한 법률’ 등 법령명으로 별도 조회합니다. |
+| **채권추심** 업무에서 추심금 관련 판례와 지연이자를 확인하고 싶다. | 민사집행법 등 관련 법령과 추심금 판례를 조회합니다. 원금·기간·적용 연이율을 입력하면 이자와 계산식을 확인할 수 있습니다. |
+| 청약 기준이나 재개발 절차는 어디서 확인하나? | 청약은 주택공급에 관한 규칙과 별표, 정비사업은 관련 법령의 위임 조문과 행정심판례를 조사합니다. |
+| 계약서에 갱신 포기나 전입 제한 특약이 있다. 어느 문구를 다시 읽어야 하나? | 계약서 본문에서 검토할 문구와 이유, 근거 법령·조문을 표시합니다. 담당자는 원문과 개별 계약 사정을 함께 확인합니다. |
+
+### 처음 써볼 질문
+
+> 2024년 3월 1일에 시행 중이던 주택임대차보호법 제6조의3을 찾아줘. 그날 시행 중인 판의 시행일과 조문 본문을 보여줘.
+
+연결한 AI가 `article_get`에 법령명·조문 번호·기준일을 전달하는 예입니다. 개별 계약에 적용할 때는 해당 판의 부칙과 경과규정도 함께 확인합니다.
+
+이어서 “갱신 거절과 관련된 판례를 찾아서 법원명·선고일·사건번호·원문 링크를 보여줘”라고 요청할 수 있습니다. 판례 목록에 있어도 MCP에서 본문을 가져오지 못하는 항목이 있습니다. 이때는 결과의 링크나 사건번호로 원문을 확인합니다. 사건번호 점검 결과에는 **형식이 맞는지**와 **법제처 판례 검색에서 찾았는지**가 따로 표시됩니다.
+
+## 연결하기
+
+아래 `claude` 명령은 Claude Code CLI가 설치된 환경에서 실행합니다. 다른 MCP 클라이언트의 설정 예시는 연결 안내에 있습니다. [클라이언트별 설정](https://github.com/conoc612-a11y/airealty-lawmcp/blob/main/USER_GUIDE.md)
+
+**호스팅 서버**에 연결하려면 운영자에게 받은 토큰으로 다음 명령을 실행합니다. 꺾쇠괄호 부분을 해당 값으로 바꿉니다.
 
 ```bash
 claude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --header "Authorization: Bearer <발급받은 토큰>"
+claude mcp list
 ```
 
-토큰은 운영자(`conoc@naver.com`)에게 요청하면 사용자별로 발급됩니다. 토큰마다 초당 2회·버스트 10회·하루 2,000회(`tools/call` 기준)로 제한되며, 넘으면 `429` 와 `Retry-After` 를 돌려줍니다.
-Claude 앱(claude.ai·Desktop)에서는 **설정 → 커넥터 → 커스텀 커넥터 추가** 에 같은 URL 을 넣고 요청 헤더 `Authorization: Bearer <토큰>` 을 지정합니다(요청 헤더 입력은 조직 Owner 에게만 보이는 베타 기능입니다).
-
-### 2. 로컬 설치(자기 법제처 키) — 한도를 혼자 씁니다
-
-1. [open.law.go.kr](https://open.law.go.kr) 가입 → OPEN API 신청(승인 1~2일) → **API인증키관리** 에서 인증값(OC) 복사.
-2. ```bash
-   git clone https://github.com/conoc612-a11y/airealty-lawmcp && cd airealty-lawmcp && npm install
-   claude mcp add airealty-law -e openlaw_API_KEY=<내 인증값> -- node /절대경로/airealty-lawmcp/src/index.js
-   ```
-   인증값은 환경변수 `openlaw_API_KEY` 또는 저장소 상위 폴더의 `keys.env`(`openlaw_API_KEY=…`)에서 읽고, 어디에도 출력하지 않습니다.
-
-## 도구
-
-코어 12(항상 노출): `statute_find` `article_get` `statute_outline` `annex_get` `statute_history` `source_search` `source_get` `citation_audit` `precedent_trace` `contract_risk_scan` `research_run` `toolbox`
-카탈로그 15(`toolbox` 로 호출): `term_lookup` `abbreviation_list` `change_feed` `jo_code` `article_refs` `link_build` `precedent_similar` `ordinance_link` `admin_rule_diff` `semantic_article_search` `english_statute` `article_with_cases` `legal_calc` `caseno_verify` `case_search`
-
-- `legal_calc` — 기간 만료일(민법 제157조·제159조~제161조), 기간 일수, 지연손해금을 로컬에서 계산하고 근거 조문을 반환한다. 공휴일 내장표(2025~2027)는 `extraHolidays`로 보충할 수 있다.
-- `caseno_verify` — 사건번호 형식 검증(연도+사건부호+일련번호)과 법제처 판례 DB 1차 존재 확인. 업스트림 부분 일치(뒷자리만 같은 다른 부호)를 엄격 비교로 제외한다. 최종 진위는 대법원 사법정보공개포털(캡차)에서 사용자가 직접 확인.
-- `case_search` — 사무소 과거 사건 문서 키워드 검색. 환경변수 `LAWMCP_CASES_DIR`(절대경로)에 지정한 폴더의 .txt·.md·.csv·.json·.xml·.hwpx 파일을 스캔해 등장 수로 순위를 매긴다(로컬 읽기 전용·외부 전송 없음).
-
-`research_run` 시나리오: `rent_dispute` `housing_subscription` `redevelopment_procedure` `brokerage_duty` `zoning_check` `tax_on_transfer` `contract_check` `version_at` `statute_map` `amendment_watch`.
-`source_search` 원천 20종 중 특별행정심판 2종은 `acr_adjudication`·`civil_service_appeal`. `term_lookup` 모드: `define` `from_everyday` `to_everyday` `articles`.
-`article_get` 은 `format`(기본 `structured`: 항·호 트리 + `head`, `text`: 평문만)으로 같은 본문을 두 번 싣지 않습니다.
-
-모든 도구는 같은 봉투 `{ok,total,returned,page?,items,warnings,notes,next,meta}` / 오류 `{ok:false,error:{code,message,retryable,hint?,candidates?}}` 를 돌려주고, `annotations.readOnlyHint=true` 입니다.
-
-## 직접 띄우기
+**자기 PC에서 실행**하려면 Node.js 20 이상과 법제처 API 인증값(OC)을 준비합니다. 다음 명령의 경로를 실제 설치 위치로 바꿉니다. [법제처 공동활용 신청](https://open.law.go.kr)
 
 ```bash
-npm install
-npm test                            # 빌드 검사(tools/list ≤13KB · 코어 12 · 카탈로그 15) + 단위 테스트(모의 업스트림, 네트워크 없음)
-node src/index.js                   # stdio MCP
-node src/http-server.js             # Streamable HTTP 127.0.0.1:3457/mcp (POST 전용, GET/DELETE 405, /healthz)
-LAWMCP_LIVE_URL=http://127.0.0.1:3457/mcp npm run test:live   # 실업스트림 B1~B11(서버 떠 있어야 함)
-node tools/bench.js --out bench.json                           # cold start 5회 + B1~B11 5회
+git clone https://github.com/conoc612-a11y/airealty-lawmcp
+cd airealty-lawmcp
+npm ci
+claude mcp add airealty-law -e "openlaw_API_KEY=<내 인증값>" -- node "/절대경로/airealty-lawmcp/src/index.js"
+claude mcp list
 ```
 
-### 공개 호스팅(HTTP) 설정
+원격 연결은 호스팅 서버가 요청을 처리하고, 로컬 연결은 내 PC에서 서버를 실행합니다. 계약서 점검과 기간·이자 계산은 서버 내부에서 처리하며, 법령·판례 조회에는 법제처 API를 사용합니다. 사무소 문서 검색은 로컬 서버에 `LAWMCP_CASES_DIR`로 지정한 폴더를 읽고 파일 경로와 일치 구절 일부를 호출한 클라이언트에 반환합니다. 검색할 문서는 UTF-8 텍스트 파일(`.txt`, `.md`, `.csv`, `.json`, `.xml`)로 준비하세요. PDF·한글 문서는 본문을 텍스트로 내보낸 뒤 검색할 수 있습니다.
 
-- 토큰은 `node tools/token.js add <이름>` 으로 발급(값은 그때 한 번만 출력) · `revoke <이름>` · `list`. 파일 `~/.config/airealty-lawmcp/tokens.txt` 에는 `이름 sha256(토큰)` 만 남고, 서버가 5초마다 파일 변경을 따라가므로 재시작이 필요 없습니다.
-- **인증 강제**: `LAWMCP_HOST` 가 루프백이 아니거나 `LAWMCP_REQUIRE_AUTH=1` 이거나 토큰 설정이 있는데 유효 토큰이 0개면 종료 코드 2. 토큰이 없는 서버라도 `cf-connecting-ip`·`x-forwarded-for` 가 붙은(프록시를 거친) 요청은 401 입니다. JSON-RPC 배치(배열)는 400 으로 거부합니다(한도 우회 방지).
-- 토큰 출처: `LAWMCP_TOKENS_FILE`(파일, 해시 또는 평문 줄) 또는 `LAWMCP_TOKENS`(`이름:토큰,…` 평문). 비교는 sha256 + timingSafeEqual, 로그에는 이름만 남깁니다.
-- 토큰별 한도(`tools/call` 만 셈): `LAWMCP_TOKEN_RATE_PER_SEC`(2) · `LAWMCP_TOKEN_BURST`(10) · `LAWMCP_TOKEN_DAILY`(2000, UTC 자정 초기화 — 일일 상한의 `Retry-After` 는 최대 86400초).
-- `/healthz` 는 토큰 없이 `ok`·`version` 만, 토큰이 있으면 캐시·업스트림·한도·예열 상태까지.
-- 브라우저 Origin 은 로컬(localhost·127.0.0.1)만 허용하며 `LAWMCP_ALLOWED_ORIGINS`(쉼표)로 더할 수 있습니다. 그 밖의 Origin 은 403.
-- HTTPS 는 앞단(Cloudflare Tunnel 등)에서 끝냅니다. 서버 자체는 평문 HTTP 입니다.
-- 컨테이너: `docker build -t airealty-lawmcp . && docker run -e openlaw_API_KEY=… -e LAWMCP_TOKENS=me:… -p 3457:3457 airealty-lawmcp`
+## 도구 찾기
 
-### 환경변수
+| 하려는 일 | 도구 |
+| --- | --- |
+| 법령 검색, 조문 원문, 상·하위 법령, 별표·서식, 개정 연혁 조회 | `statute_find`, `article_get`, `statute_outline`, `annex_get`, `statute_history` |
+| 판례·법령해석례·행정심판례·자치법규 등 검색 및 본문 열기 | `source_search`, `source_get` |
+| 문서의 법령 인용 점검, 사건번호로 관련 판례 추적 | `citation_audit`, `precedent_trace` |
+| 계약서 특약 점검, 업무별 자료를 단계별로 조사 | `contract_risk_scan`, `research_run` |
+| 기간·이자 계산, 사건번호 점검, 사무소 문서 검색 등 보조 도구 사용 | `toolbox`에서 `list`로 찾고 `describe`로 입력을 확인한 뒤 `call`로 실행 |
 
-`LAWMCP_PORT`(3457) · `LAWMCP_HOST`(127.0.0.1) · `LAWMCP_CONCURRENCY`(4, 1~8) · `LAWMCP_RATE_PER_SEC`(5) · `LAWMCP_BURST`(8) — 업스트림 전체 한도 ·
-`LAWMCP_BUCKET_FILE`(파일 공유 버킷) · `LAWMCP_CACHE_DIR`(디스크 캐시: 사전·조문 번호 색인 24h·체계도 요약 7d·판 목록 6h — 키 없음) · `LAWMCP_HIERARCHY_BUDGET_MS`(1200) ·
-`LAWMCP_PREWARM`(기본 1: 서버가 뜬 뒤 `src/prewarm.js` 목록 38개 법령의 색인·체계도를 백그라운드로 채움, `0` 이면 끔) · `LAWMCP_DEBUG`(stderr 오류 로그).
+연결 직후 AI에 노출되는 핵심 도구는 **12개**, 필요할 때 꺼내 쓰는 보조 도구는 **15개**입니다. 보조 도구로는 사실관계가 비슷한 판례 찾기(`precedent_similar`), 조문과 관련 판례 함께 읽기(`article_with_cases`), 연계 조례 찾기(`ordinance_link`), 최근 공포·개정 법령 확인(`change_feed`)도 가능합니다.
 
-예열·만료 갱신은 `drf.call(..., {background:true})` 레인으로만 나갑니다: 전경 요청이 진행 중이거나 버킷 여유가 2토큰 미만이면 기다리고, 전경 요청이 같은 키에 합류하면 바로 나갑니다. `/healthz` 의 `prewarm`·`auth` 에 상태가 보입니다.
+`contract_risk_scan`에는 200자 이상의 계약서 본문을 입력합니다. `legal_calc`로 만료일을 계산할 때는 초일 산입 여부와 휴일 처리 조건을, 이자를 계산할 때는 원금·기간·적용 이율을 확인합니다. 내장 공휴일표 범위는 2025~2027년이며 추가 휴일은 `extraHolidays`로 지정할 수 있습니다.
 
-## 구조
+## 개발 및 운영
 
-`src/drf.js`(호출·버킷·재시도·차단기·백그라운드 레인) · `cache.js` · `diskcache.js` · `article_index.js`(조문 번호 색인) · `hierarchy_cache.js`(체계도 요약) · `prewarm.js` · `dictionary.js`(법령명 사전) · `resolver.js`(이름 해석) · `versions.js`(판 선택) · `articles.js`(조문 구조화) ·
-`citations.js`+`casenos.js`(인용 추출) · `sources.js`(원천 20종) · `holidays.js`(공휴일 내장표) · `legalcalc.js`(기간·이자 엔진) · `risk/`(문서 위험 규칙·엔진) · `tools/*`(도구) · `registry.js` · `stdio.js` · `http-server.js` · `auth.js`(토큰·토큰별 한도).
+```bash
+npm test                 # 도구 목록·스키마 크기 검사와 오프라인 단위 테스트
+npm start                # 표준 입출력(stdio)으로 MCP 실행
+npm run http             # 기본 주소 127.0.0.1:3457, MCP 경로 /mcp
+```
 
-## 개인정보·출처
+- **응답 읽기** — 성공하면 `items`에 결과가 담깁니다. `warnings`와 `notes`에서 부분 조회나 확인 조건을, `next`에서 이어서 호출할 도구를 볼 수 있습니다. 실패하면 `error.code`와 `error.retryable`을 확인합니다.
+- **자체 HTTP 서버** — 토큰은 `node tools/token.js add <이름>`으로 발급하고 `list`와 `revoke <이름>`으로 관리합니다. `LAWMCP_TOKENS_FILE` 또는 `LAWMCP_TOKENS`로도 설정할 수 있습니다. 외부 인터페이스에 바인딩하려면 인증을 구성합니다. HTTPS는 앞단 프록시에서 처리합니다.
+- **호출 한도** — Node HTTP 서버의 토큰별 기본값은 초당 2회, 버스트 10회, 하루 2,000회입니다. `LAWMCP_TOKEN_RATE_PER_SEC`, `LAWMCP_TOKEN_BURST`, `LAWMCP_TOKEN_DAILY`로 바꿉니다. 한도에 도달하면 HTTP 429와 `Retry-After`를 반환합니다.
+- **상태와 성능** — `/healthz`에서 상태를 확인합니다. `LAWMCP_CACHE_DIR`로 법령 캐시 위치를 지정하고 `LAWMCP_PREWARM=0`으로 예열을 끌 수 있습니다. 실행 중인 서버에 대한 검증은 `npm run test:live`, 반복 측정은 `node tools/bench.js --out bench.json`으로 수행합니다.
 
-서버는 요청 본문(검색어·문서 텍스트)을 법제처 API 호출에만 쓰고 저장하지 않습니다. 디스크 캐시에는 법령 파생물(사전·조문 번호 색인·체계도 요약·판 목록)만 남고 사용자 입력·인증값은 들어가지 않습니다. 로그에는 토큰 **이름**과 횟수만 남습니다.
-법령정보의 저작권은 법제처에 있으며 출처는 응답의 `link`(www.law.go.kr 공개 주소)로 표기합니다. 상업적 이용 가능 여부는 법제처 이용안내를 따릅니다.
+제품 범위와 기능별 검수 기준은 PRD에 정리했습니다. [PRD 읽기](PRD.md)
 
-## 라이선스
-
-MIT — `LICENSE`.
+서버 소스는 MIT 라이선스로 배포합니다. 조회한 법령·판례 등은 각 결과의 원문 출처와 제공기관의 이용조건을 확인하세요. [소스 라이선스](https://github.com/conoc612-a11y/airealty-lawmcp/blob/main/LICENSE) · [법제처 국가법령정보 공동활용](https://open.law.go.kr)

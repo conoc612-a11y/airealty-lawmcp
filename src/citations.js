@@ -1,6 +1,6 @@
 // 인용 추출 (SPEC §4.8 행동 명세). 법령명은 **사전 일치**로만 잡는다: 조문 표기 바로 앞에서 끝나는 가장 긴 사전 항목.
 // 앞의 낱말·조사("…에는", "또한")는 결코 법령명에 들어가지 않는다. 「」 안 이름은 사전에 없어도 후보.
-import { allNames, normalizeName, dictionary, loadDictionarySync } from "./dictionary.js";
+import { allNames, normalizeName, loadDictionarySync } from "./dictionary.js";
 import { formatArticleRef, articleLabel } from "./jo.js";
 import { findCaseNumbers } from "./casenos.js";
 
@@ -8,16 +8,19 @@ const ART_RE = /제\s*(\d{1,4})\s*조(?:\s*의\s*(\d{1,3}))?((?:\s*(?:제\s*)?\d
 const ANAPHORA_RE = /(같은\s*법|동법|이\s*법|해당\s*법|같은\s*조|동조|이\s*조|같은\s*항|동항)\s*(?:시행령|시행규칙)?\s*$/;
 const CONTINUATION_RE = /^[\s,·ㆍ및와과또는내지부터까지\-~]*$/;
 
-let nameIndex = null; let nameIndexSize = -1;
+let nameIndex;
 function names() {
   const d = loadDictionarySync();
-  const size = d.entries.length + d.abbreviations.length;
-  if (nameIndex && nameIndexSize === size) return nameIndex;
-  const map = allNames();
-  const list = [...map.entries()].map(([n, info]) => ({ norm: normalizeName(n), display: n, ...info })).filter((x) => x.norm.length >= 2);
-  list.sort((a, b) => b.norm.length - a.norm.length);
-  nameIndex = list; nameIndexSize = size;
-  return list;
+  if (nameIndex?.dictionary === d) return nameIndex;
+  const byName = new Map(), lengths = new Set();
+  for (const [display, info] of allNames()) {
+    const norm = normalizeName(display);
+    if (norm.length < 2 || byName.has(norm)) continue;
+    byName.set(norm, { norm, display, ...info });
+    lengths.add(norm.length);
+  }
+  nameIndex = { dictionary: d, byName, lengths: [...lengths].sort((a, b) => b - a) };
+  return nameIndex;
 }
 
 /** 앞 창(window)을 공백 제거 정규화하되 원문 인덱스 지도를 함께 만든다. */
@@ -57,13 +60,10 @@ export function extractCitations(text) {
     // 3) 사전 일치(가장 긴 항목)
     const win = normalizedWindow(t, start);
     let best = null;
-    for (const n of index) {
-      if (win.norm.length >= n.norm.length && win.norm.endsWith(n.norm)) {
-        // 이름 바로 앞 글자가 한글이면 더 긴 낱말의 꼬리일 수 있다 — 사전에 더 긴 이름이 없을 때만 허용(정렬이 긴 것 우선이라 첫 일치가 최장)
-        const prevCh = win.idx.length > n.norm.length ? t[win.idx[win.idx.length - n.norm.length - 1]] : "";
-        if (prevCh && /[가-힣]/.test(prevCh) && !/[「\s]/.test(prevCh)) { if (!bestWordBoundaryOk(t, win.idx[win.idx.length - n.norm.length])) continue; }
-        best = n; cit.span[0] = win.idx[win.idx.length - n.norm.length]; break;
-      }
+    for (const length of index.lengths) {
+      if (length > win.norm.length) continue;
+      best = index.byName.get(win.norm.slice(-length));
+      if (best) { cit.span[0] = win.idx[win.idx.length - length]; break; }
     }
     if (an && (!best || (an.index + an[0].length) > (bracket ? bracket.index : 0))) {
       const word = an[1].replace(/\s+/g, "");
@@ -75,7 +75,7 @@ export function extractCitations(text) {
       } else cit.unresolved = true;
     } else if (bracket) {
       const nm = bracket[1].trim();
-      const hit = index.find((n) => n.norm === normalizeName(nm));
+      const hit = index.byName.get(normalizeName(nm));
       cit.law = hit ? hit.name : nm; cit.lawDisplay = nm; cit.inDictionary = !!hit; cit.lawId = hit?.lawId;
       cit.span[0] = bracket.index;
     } else if (best) {
@@ -95,8 +95,6 @@ export function extractCitations(text) {
   out.sort((a, b) => a.span[0] - b.span[0]);
   return out;
 }
-
-function bestWordBoundaryOk() { return true; }
 
 function parseSub(s) {
   const o = {};

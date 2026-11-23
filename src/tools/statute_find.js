@@ -1,6 +1,6 @@
 // statute_find — 법령 찾기(이름·키워드·자동완성·일괄·기간 필터) (SPEC §4.1).
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
-import { resolveLawName, sortCandidates, matchTypeOf } from "../resolver.js";
+import { fromDictionary, resolveLawName, sortCandidates, matchTypeOf } from "../resolver.js";
 import { ensureDictionary, dictionary, normalizeName } from "../dictionary.js";
 import { search, lawRow } from "../upstream.js";
 import { listVersions, selectVersion } from "../versions.js";
@@ -56,9 +56,9 @@ export default defineTool({
       if (q.length < 2) throw invalid("suggest 는 query 2자 이상");
       await ensureDictionary();
       const norm = normalizeName(q);
-      let cands = dictionary().entries.map((e) => ({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, statusCode: "현행" }));
+      let cands = fromDictionary(norm);
       let cacheState = "hit";
-      if (!cands.length) { const r = await search("eflaw", { query: q, nw: 3, display: 100 }, { rowKeys: ["law"] }); cands = r.rows.map(lawRow); cacheState = cacheStateOf(r); }
+      if (cands === null) { const r = await search("eflaw", { query: q, nw: 3, display: 100 }, { rowKeys: ["law"] }); cands = r.rows.map(lawRow); cacheState = cacheStateOf(r); }
       let ranked = sortCandidates(norm, cands);
       if (a.kinds?.length) ranked = ranked.filter((c) => a.kinds.includes(c.kind));
       const total = ranked.length;
@@ -76,7 +76,8 @@ export default defineTool({
     const terms = q.split(/\s+/).filter(Boolean);
     // 사전에 정확 일치가 있으면 시행예정 판 조회(판 목록)를 검색과 동시에 시작한다(왕복 직렬화 방지)
     await ensureDictionary();
-    const exactEntry = dictionary().entries.find((e) => normalizeName(e.n) === normalizeName(q));
+    const normalizedQuery = normalizeName(q);
+    const exactEntry = dictionary().entries.find((e) => normalizeName(e.n) === normalizedQuery);
     if (exactEntry && a.scope === "current") listVersions(exactEntry.i).catch(() => {});
     const r = await search("eflaw", params, { rowKeys: ["law"] });
     let rows = r.rows.map(lawRow);

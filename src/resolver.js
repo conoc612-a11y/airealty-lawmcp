@@ -26,13 +26,13 @@ export function sortCandidates(inputNorm, cands) {
     .sort((a, b) => a.tier - b.tier || KIND_RANK(a.kind) - KIND_RANK(b.kind) || a.name.length - b.name.length || a.name.localeCompare(b.name, "ko"));
 }
 
-function fromDictionary(norm) {
+export function fromDictionary(norm) {
   const d = dictionary();
   if (!d.entries.length) return null;
   const out = [];
   for (const e of d.entries) {
     const n = normalizeName(e.n);
-    if (n === norm || n.startsWith(norm) || n.includes(norm)) out.push({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, status: "current" });
+    if (n.includes(norm)) out.push({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, status: "current" });
   }
   return out;
 }

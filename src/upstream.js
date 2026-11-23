@@ -29,7 +29,9 @@ export async function cached(path, params, ttl, opts = {}) {
   if (hit !== undefined) return { data: hit, hit: true };
   try {
     const data = await call(path, params, opts);
-    cache.set(key, data, ttl);
+    const now = Date.now();
+    const remaining = opts.validUntil == null ? ttl : Math.min(ttl, opts.validUntil - now);
+    cache.set(key, data, remaining, now);
     return { data, hit: false };
   } catch (e) {
     // 오프라인 폴백 — 업스트림 실패 시 48시간 이내 만료 캐시를 스타일 응답(초과·없으면 원래 오류)
@@ -40,8 +42,8 @@ export async function cached(path, params, ttl, opts = {}) {
 }
 
 /** lawSearch.do 목록. */
-export async function search(target, params, { ttl = TTL.list, rowKeys, long } = {}) {
-  const { data, hit, stale } = await cached("lawSearch.do", { target, ...params }, ttl, { long });
+export async function search(target, params, { ttl = TTL.list, rowKeys, long, validUntil } = {}) {
+  const { data, hit, stale } = await cached("lawSearch.do", { target, ...params }, ttl, { long, validUntil });
   return { ...unwrapList(data, rowKeys), hit, stale: !!stale, raw: data };
 }
 

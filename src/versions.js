@@ -1,25 +1,31 @@
 // 판(버전) 목록과 기준일 판 선택 (SPEC §3.5). 한 MST 가 시행일이 다른 여러 판(분할 시행)으로 나올 수 있어 키는 (mst, efYd).
 import { search, service, lawRow, digits, str, asList } from "./upstream.js";
-import { TTL } from "./cache.js";
-import { fmtDate, todayKst } from "./kst.js";
+import { cache, TTL } from "./cache.js";
+import { fmtDate, todayKst, msUntilKstMidnight } from "./kst.js";
 import { LawError, invalid } from "./errors.js";
 import { resolveLawName } from "./resolver.js";
 import { cacheState } from "./envelope.js";
 import { normalizeName } from "./dictionary.js";
-import { readDisk, writeDisk } from "./diskcache.js";
+import { cacheDir, readDisk, writeDisk } from "./diskcache.js";
 
 /** 법령ID → 판 목록(시행일 내림차순). 각 {mst, efYd, effectiveDate, promulgationDate, promulgationNo, revision, statusCode}. */
 export async function listVersions(lawId) {
-  // 디스크(키 없음): 같은 KST 날짜 안에서 6시간 — 새 프로세스의 첫 호출도 판 목록 왕복을 건너뛴다
-  const dk = readDisk("versions", lawId);
-  if (dk && dk.ageMs < TTL.resolve && todayKst(dk.savedAt) === todayKst() && Array.isArray(dk.value?.versions) && dk.value.versions.length) return { ...dk.value, hit: true };
-  const out0 = await fetchVersions(lawId);
-  if (out0.versions.length) writeDisk("versions", lawId, { versions: out0.versions, name: out0.name, kind: out0.kind });
-  return out0;
+  const now = Date.now();
+  const key = `versions:${lawId}`;
+  const directory = cacheDir();
+  const warm = cache.get(key, now);
+  if (warm?.directory === directory) return { ...warm.value, hit: true };
+  const dk = readDisk("versions", lawId, now);
+  const ttl = Math.min(TTL.resolve, msUntilKstMidnight(now));
+  if (dk && dk.ageMs < TTL.resolve && todayKst(dk.savedAt) === todayKst(now) && Array.isArray(dk.value?.versions) && dk.value.versions.length) {
+    cache.set(key, { directory, value: dk.value }, Math.min(ttl, TTL.resolve - dk.ageMs), now);
+    return { ...dk.value, hit: true };
+  }
+  return fetchVersions(lawId, key, directory, now, ttl);
 }
-async function fetchVersions(lawId) {
+async function fetchVersions(lawId, key, directory, started, ttl) {
   const rows = []; let hit = true; let stale = false; let name = "", kind = "";
-  const fetchPage = (page) => search("eflaw", { LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" }, { rowKeys: ["law"], ttl: TTL.resolve });
+  const fetchPage = (page) => search("eflaw", { LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" }, { rowKeys: ["law"], ttl, validUntil: started + ttl });
   const first = await fetchPage(1);
   const pages = [first];
   const need = Math.min(5, Math.ceil((first.total || 0) / 100));
@@ -36,6 +42,12 @@ async function fetchVersions(lawId) {
   const seen = new Set(); const out = [];
   for (const v of rows) { const k = v.mst + ":" + v.efYd; if (!seen.has(k) && /^\d{8}$/.test(v.efYd)) { seen.add(k); out.push(v); } }
   out.sort((a, b) => b.efYd.localeCompare(a.efYd) || b.mst.localeCompare(a.mst));
+  // 캐시에서 읽은 페이지와 장애 폴백은 원래 만료 시각을 연장하지 않는다.
+  if (out.length && pages.every((page) => !page.hit && !page.stale) && Date.now() < started + ttl && cacheDir() === directory) {
+    const value = { versions: out, name, kind };
+    writeDisk("versions", lawId, value, started);
+    cache.set(key, { directory, value }, ttl, started);
+  }
   return { versions: out, name, kind, hit, stale };
 }
 

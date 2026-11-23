@@ -90,7 +90,7 @@ export function extractFigures(text) {
 const toMonths = (p) => (p.unit === "년" ? p.value * 12 : p.unit === "개월" ? p.value : p.unit === "주" ? p.value / 4 : p.value / 30);
 
 // ── 수치 검사 ──
-function numericCheck(rule, clause, figures) {
+function numericCheck(rule, clause) {
   const c = rule.check; if (!c) return null;
   const t = clause.text;
   if (c.kind === "term_months") {
@@ -144,7 +144,8 @@ function signalMatch(sig, text) {
 /** 문장 경계 발췌: 일치 용어 주변 1~2문장. */
 function excerptAround(text, terms, max = 220) {
   const sents = text.split(/(?<=[.。!?])\s+|\n/).filter(Boolean);
-  const idx = sents.findIndex((s) => terms.every((t) => s.includes(t))) >= 0 ? sents.findIndex((s) => terms.every((t) => s.includes(t))) : sents.findIndex((s) => terms.some((t) => s.includes(t)));
+  let idx = sents.findIndex((s) => terms.every((t) => s.includes(t)));
+  if (idx < 0) idx = sents.findIndex((s) => terms.some((t) => s.includes(t)));
   const pick = idx >= 0 ? sents.slice(Math.max(0, idx), idx + 2) : sents.slice(0, 2);
   let out = pick.join(" ");
   if (out.length > max) { const cut = out.slice(0, max); const last = Math.max(cut.lastIndexOf("."), cut.lastIndexOf("다")); out = cut.slice(0, last > 60 ? last + 1 : max); }
@@ -160,34 +161,35 @@ export function analyze(text, { docType: override, maxFindings = 20 } = {}) {
     if (docType.value !== "other" && !rule.docTypes.includes(docType.value)) continue;
     for (const cl of clauses) {
       const sig = signalMatch(rule.signals, cl.text);
-      const num = numericCheck(rule, cl, figures);
+      if (!sig.hit && rule.signals?.all?.length) continue;
+      const num = numericCheck(rule, cl);
       let hit = false, terms = sig.terms, detail = null, soft = false;
       if (rule.check && rule.signals) { if (num?.hit && sig.hit) { hit = true; detail = num.detail; soft = !!num.soft; } else if (num?.hit && !rule.signals.all?.length) { hit = true; detail = num.detail; } }
       else if (rule.check) { if (num?.hit) { hit = true; detail = num.detail; soft = !!num.soft; terms = [num.value]; } }
       else if (sig.hit) hit = true;
       if (!hit) continue;
       const severity = soft ? (rule.severity === "high" ? "medium" : "low") : rule.severity;
-      findings.push({
-        id: `${rule.id}@${cl.no}`, rule: rule.id, category: rule.category, severity, clause: cl.no, clauseTitle: cl.title,
-        excerpt: excerptAround(cl.text, terms.filter(Boolean)),
-        why: (detail ? `${detail}. ` : "") + rule.elements,
-        basis: rule.basis.map((b) => ({ law: b.law, label: b.label, effectiveDate: rule.basisEffectiveDate, link: lawLink(b.law, b.label) })),
-        confidence: +(rule.check ? (soft ? 0.5 : 0.8) : Math.min(0.9, 0.5 + 0.15 * terms.length)).toFixed(2),
-        matched: terms,
-      });
+      const confidence = +(rule.check ? (soft ? 0.5 : 0.8) : Math.min(0.9, 0.5 + 0.15 * terms.length)).toFixed(2);
+      findings.push({ rule, cl, terms, detail, severity, confidence });
       if (docType.value === "other") break; // 유형 미상이면 규칙당 1건만
     }
   }
   const order = { high: 0, medium: 1, low: 2 };
   findings.sort((a, b) => order[a.severity] - order[b.severity] || b.confidence - a.confidence);
-  const conflicts = findConflicts(figures, clauses, findings);
-  const limited = findings.slice(0, maxFindings);
+  const conflicts = findConflicts(figures, clauses);
+  const limited = findings.slice(0, maxFindings).map(({ rule, cl, terms, detail, severity, confidence }) => ({
+    id: `${rule.id}@${cl.no}`, rule: rule.id, category: rule.category, severity, clause: cl.no, clauseTitle: cl.title,
+    excerpt: excerptAround(cl.text, terms.filter(Boolean)),
+    why: (detail ? `${detail}. ` : "") + rule.elements,
+    basis: rule.basis.map((b) => ({ law: b.law, label: b.label, effectiveDate: rule.basisEffectiveDate, link: lawLink(b.law, b.label) })),
+    confidence, matched: terms,
+  }));
   const score = findings.reduce((s, f) => s + (f.severity === "high" ? 3 : f.severity === "medium" ? 2 : 1), 0);
   const grade = { value: score === 0 ? "A" : score <= 2 ? "B" : score <= 5 ? "C" : score <= 9 ? "D" : "E", score, rationale: `high ${findings.filter((f) => f.severity === "high").length}건×3 + medium ${findings.filter((f) => f.severity === "medium").length}건×2 + low ${findings.filter((f) => f.severity === "low").length}건×1 = ${score} (A 0 · B 1~2 · C 3~5 · D 6~9 · E 10+). 위법 판정이 아니라 검토 필요 신호의 합계입니다.` };
   return { docType: { value: docType.value, label: RULES.docTypes[docType.value]?.label || "기타", confidence: docType.confidence, signals: docType.signals.slice(0, 8), basis: docType.basis }, clauses: clauses.map((c) => ({ no: c.no, title: c.title, span: c.span })), findings: limited, findingsTotal: findings.length, figures, conflicts, grade };
 }
 
-function findConflicts(figures, clauses, findings) {
+function findConflicts(figures, clauses) {
   const out = [];
   const byLabel = new Map();
   for (const a of figures.amounts) { if (a.label === "금액") continue; const arr = byLabel.get(a.label) || []; arr.push(a); byLabel.set(a.label, arr); }

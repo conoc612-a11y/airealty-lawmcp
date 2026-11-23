@@ -5,7 +5,7 @@ import { service, search, str, asList } from "../upstream.js";
 import { TTL } from "../cache.js";
 import { fmtDate } from "../kst.js";
 import { LawError, invalid } from "../errors.js";
-import { paginateByBytes, cacheState } from "../envelope.js";
+import { paginateByBytes, cacheState, mergeCache } from "../envelope.js";
 import { extractCitations } from "../citations.js";
 import { normalizeUpstreamLink } from "../links.js";
 import { dictionary } from "../dictionary.js";
@@ -123,6 +123,6 @@ export default defineTool({
     if (pg.hasMore) next.push({ tool: "source_get", args: { source: a.source, id, sections: a.sections, mode: a.mode, maxBytes: a.maxBytes, part: pg.part + 1 }, why: "이어받기" });
     if (a.source === "precedent" && doc.caseNo) next.push({ tool: "precedent_trace", args: { caseNo: doc.caseNo }, why: "이 판례의 인용 관계·생존 신호" });
     if (doc.refs.articles[0]) next.push({ tool: "article_get", args: { name: doc.refs.articles[0].law, articles: [doc.refs.articles[0].label] }, why: "참조조문 원문" });
-    return ok({ items: [item], total: 1, page: { no: pg.part, size: 1, hasMore: pg.hasMore }, warnings, notes, cacheState: cacheStates.every((c) => c === "hit") ? "hit" : cacheStates.some((c) => c === "hit") ? "partial" : "miss", next });
+    return ok({ items: [item], total: 1, page: { no: pg.part, size: 1, hasMore: pg.hasMore }, warnings, notes, cacheState: mergeCache(cacheStates), next });
   },
 });
