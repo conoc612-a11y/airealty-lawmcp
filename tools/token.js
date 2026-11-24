@@ -14,7 +14,7 @@ if (cmd === "add" && /^[a-z0-9_-]{1,32}$/i.test(name || "")) {
   if (entries.some(([n]) => n === name)) { console.error(`이미 있음: ${name} (revoke 먼저)`); process.exit(1); }
   const token = "lm_" + randomBytes(24).toString("base64url");
   save([...entries, [name, createHash("sha256").update(token).digest("hex")]]);
-  console.log(`${name} 발급 — 아래 값을 사용자에게 한 번만 전달(다시 볼 수 없다):\n${token}\n\nclaude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --header "Authorization: Bearer ${token}"`);
+  console.log(`${name} 발급 — 아래 값을 사용자에게 한 번만 전달(다시 볼 수 없다):\n${token}\n\nclaude mcp add --transport http airealty-law "https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2" --header "Authorization: Bearer ${token}"`);
 } else if (cmd === "revoke" && name) {
   if (!entries.some(([n]) => n === name)) { console.error(`없음: ${name}`); process.exit(1); }
   save(entries.filter(([n]) => n !== name)); console.log(`${name} 폐기 (서버가 5초 안에 반영)`);

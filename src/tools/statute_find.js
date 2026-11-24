@@ -1,7 +1,8 @@
 // statute_find — 법령 찾기(이름·키워드·자동완성·일괄·기간 필터) (SPEC §4.1).
+import { publicSearchRows } from "../prepared_documents.js";
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
 import { fromDictionary, resolveLawName, sortCandidates, matchTypeOf } from "../resolver.js";
-import { ensureDictionary, dictionary, normalizeName } from "../dictionary.js";
+import { ensureDictionary, exactDictionaryEntry, normalizeName } from "../dictionary.js";
 import { search, lawRow } from "../upstream.js";
 import { listVersions, selectVersion } from "../versions.js";
 import { lawLink } from "../links.js";
@@ -76,11 +77,12 @@ export default defineTool({
     const terms = q.split(/\s+/).filter(Boolean);
     // 사전에 정확 일치가 있으면 시행예정 판 조회(판 목록)를 검색과 동시에 시작한다(왕복 직렬화 방지)
     await ensureDictionary();
-    const normalizedQuery = normalizeName(q);
-    const exactEntry = dictionary().entries.find((e) => normalizeName(e.n) === normalizedQuery);
-    if (exactEntry && a.scope === "current") listVersions(exactEntry.i).catch(() => {});
-    const r = await search("eflaw", params, { rowKeys: ["law"] });
-    let rows = r.rows.map(lawRow);
+    if (a.scope === "current") {
+      const exactEntry = exactDictionaryEntry(q);
+      if (exactEntry) listVersions(exactEntry.i).catch(() => {});
+    }
+    const r = await publicSearchRows("statute", "eflaw", params, ["law"], lawRow);
+    let rows = r.items.slice();
     const norm = normalizeName(q);
     if (a.match === "any" && terms.length > 1) {
       const extra = await Promise.all(terms.slice(1).map((t) => search("eflaw", { ...params, query: t }, { rowKeys: ["law"] }).catch(() => ({ rows: [] }))));
@@ -98,7 +100,7 @@ export default defineTool({
     const items = pageRows.map((x) => item(x, ["exact", "prefix", "contains", "keyword"][tier(x)]));
     // 1순위(정확 일치)엔 시행예정 판을 붙인다
     if (items[0] && a.scope === "current") await withUpcoming(items[0], D);
-    if (r.total != null && r.total > r.rows.length) notes.push(`업스트림 전체 ${r.total}건 중 상위 ${r.rows.length}건을 순위 매김`);
+    if (r.total != null && r.total > r.items.length) notes.push(`업스트림 전체 ${r.total}건 중 상위 ${r.items.length}건을 순위 매김`);
     const next = items[0] ? [
       { tool: "article_get", args: { lawId: items[0].lawId }, why: `${items[0].name} 목차(조문 번호·제목)` },
       { tool: "statute_outline", args: { lawId: items[0].lawId, view: "hierarchy" }, why: "상하위 법령 구조" },

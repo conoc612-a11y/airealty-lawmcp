@@ -7,8 +7,8 @@ import { fmtDate } from "../kst.js";
 import { LawError, invalid } from "../errors.js";
 import { paginateByBytes, cacheState, mergeCache } from "../envelope.js";
 import { extractCitations } from "../citations.js";
-import { normalizeUpstreamLink } from "../links.js";
-import { dictionary } from "../dictionary.js";
+import { normalizeUpstreamLink, precedentViewerLink } from "../links.js";
+import { dictionary, loadDictionarySync } from "../dictionary.js";
 
 const sourceEnum = z.enum(SOURCE_NAMES);
 
@@ -28,8 +28,17 @@ export async function fetchSourceBody(source, id) {
   if (!def?.body) throw new LawError("NOT_SUPPORTED", `${source} 는 본문 조회를 제공하지 않음(목록·링크만)`, { retryable: false });
   const params = { [def.body.idParam || "ID"]: id };
   const { data, hit, stale } = await service(def.body.target, params, { ttl: TTL.sourceBody, long: true });
-  const root = data && typeof data === "object" ? Object.values(data).find((v) => v && typeof v === "object") : null;
-  if (!root || (def.body.idKey && !str(root[def.body.idKey]) && !root[def.body.sections?.[0]])) {
+  const envelope = data && typeof data === "object" ? data[def.body.rootKey] ?? Object.values(data).find(v => v && typeof v === "object") : null;
+  // Both commissions publish an extra decision wrapper. Older responses can be flat.
+  const root = (source === "pipc" || source === "acr") && envelope?.["의결서"]
+    ? envelope["의결서"] : envelope;
+  const info = root?.[def.body.info] ?? root;
+  const missingId = def.body.idKey && !str(info?.[def.body.idKey]) && !root?.[def.body.sections?.[0]];
+  if (!root || typeof root !== "object" || missingId || (source === "english" && !info?.lsNmEng && !root.JoSection?.Jo)) {
+    if (source === "precedent") throw new LawError("SOURCE_NOT_FOUND", "해당 판례의 JSON 본문을 찾을 수 없습니다", {
+      retryable: false, hint: "국세청 판례는 HTML로 제공됩니다. 공식 판례 페이지에서 확인하세요.",
+      data: { link: precedentViewerLink(id) },
+    });
     throw new LawError("SOURCE_NOT_FOUND", `${source} ${id} 본문 없음`, { retryable: false });
   }
   return { root, hit, stale: !!stale };
@@ -46,13 +55,26 @@ export async function precedentIdByCaseNo(caseNo) {
 
 export function buildSourceDoc(source, root, id, wantSections) {
   const b = SOURCES[source].body;
-  const sectionsAll = b.sections || Object.keys(root).filter((k) => typeof root[k] === "string" && root[k].length > 80);
-  const chosen = wantSections?.length ? sectionsAll.filter((s) => wantSections.includes(s)) : sectionsAll;
+  const info = root[b.info] ?? root;
+  const sectionsAll = b.sections || Object.keys(root).filter(k => typeof root[k] === "string" && root[k].length > 80);
+  const chosen = wantSections?.length ? sectionsAll.filter(s => wantSections.includes(s)) : sectionsAll;
   const sections = {};
-  for (const s of chosen) { const t = cleanText(root[s]); if (t) sections[s] = t; }
-  const agency = typeof b.agency === "function" ? b.agency(root) : str(root[b.agency]);
-  const doc = { source, id: str(root[b.idKey]) || id, title: b.title ? str(root[b.title]) : undefined, caseNo: b.caseNo ? str(root[b.caseNo]) || undefined : undefined, agency, date: fmtDate(str(root[b.date]).replace(/\D/g, "").slice(0, 8)), sections, availableSections: sectionsAll, link: b.link(id, root) || (b.linkKey ? normalizeUpstreamLink(str(root[b.linkKey])) : null) };
-  for (const k of b.extra || []) if (str(root[k])) doc[k] = str(root[k]);
+  for (const section of chosen) {
+    let raw = root[section] ?? info[section];
+    if (source === "english") {
+      const articles = section === "조문";
+      const rows = articles ? root.JoSection?.Jo : root.ArSection?.Ar;
+      raw = (Array.isArray(rows) ? rows : rows ? [rows] : []).map(row => articles ? row.joCts : row.arCts);
+    }
+    const text = cleanText(raw);
+    if (text) sections[section] = text;
+  }
+  const agency = typeof b.agency === "function" ? b.agency(info) : str(info[b.agency]);
+  const doc = { source, id: str(info[b.idKey]) || id, title: b.title ? str(info[b.title]) : undefined,
+    caseNo: b.caseNo ? str(info[b.caseNo]) || undefined : undefined, agency,
+    date: fmtDate(str(info[b.date]).replace(/\D/g, "").slice(0, 8)), sections, availableSections: sectionsAll,
+    link: b.link(id, info) || (b.linkKey ? normalizeUpstreamLink(str(info[b.linkKey])) : null) };
+  for (const k of b.extra || []) if (str(info[k])) doc[k] = str(info[k]);
   return doc;
 }
 
@@ -85,6 +107,19 @@ export function keywordsOf(text, termList, topN = 15) {
   return [...counts.values()].sort((a, b) => b.count - a.count || b.term.length - a.term.length).slice(0, topN);
 }
 
+// The upstream cache replaces the root object on refresh. Dictionary changes can
+// resolve different law names even while the same source document is cached.
+const refsByBody = new WeakMap();
+function refsForResponse(root, source) {
+  const dict = loadDictionarySync();
+  let cached = refsByBody.get(root);
+  if (!cached || cached.dict !== dict || cached.source !== source) {
+    cached = { dict, source, refs: buildRefs(root, source) };
+    refsByBody.set(root, cached);
+  }
+  return { articles: cached.refs.articles.map(a => ({ ...a })), cases: [...cached.refs.cases] };
+}
+
 export default defineTool({
   name: "source_get",
   description: "판례·결정례·해석례·심판례·행정규칙·자치법규·조약의 본문 1건을 섹션별 전문으로 가져온다(mode=digest 는 원문 문장 발췌, keywords 는 법령명·용어 빈도). 참조조문·참조판례를 구조화해 돌려준다.",
@@ -102,7 +137,7 @@ export default defineTool({
     if (!id) throw invalid("id 또는 caseNo 필요");
     const { root, hit, stale } = await fetchSourceBody(a.source, id); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
     const doc = buildSourceDoc(a.source, root, id, a.sections);
-    doc.refs = buildRefs(root, a.source);
+    doc.refs = refsForResponse(root, a.source);
     const warnings = [], notes = [];
     if (a.mode === "digest") {
       const pick = ["판시사항", "판결요지", "결정요지", "재결요지", "주문", "회답", "질의요지", "판정요지", "결정요지"].filter((s) => doc.sections[s]);

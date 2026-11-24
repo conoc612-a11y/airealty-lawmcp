@@ -1,7 +1,8 @@
 // source_search — 판례·결정례·해석례·심판례·행정규칙·자치법규·조약 등 법령 외 원천 검색 단일 창구 (SPEC §4.6).
+import { precedentViewerLink } from "../links.js";
 import { defineTool, ok, z, S } from "../tool.js";
 import { SOURCES, SOURCE_NAMES } from "../sources.js";
-import { search } from "../upstream.js";
+import { publicSearchRows } from "../prepared_documents.js";
 import { parseDate } from "../kst.js";
 import { invalid, isLawError } from "../errors.js";
 import { mergeCache, cacheState } from "../envelope.js";
@@ -30,14 +31,19 @@ export async function searchSource(source, a) {
     if (sup.date) params[sup.date] = `${f || "19000101"}~${t || "29991231"}`; else notes.push(`${source}: 날짜 필터 미지원 — 무시됨`);
   }
   if (source === "precedent") notes.push("kind 생략 = 판결");
-  const r = await search(def.list.target, params, { rowKeys: def.list.rowKeys });
-  let items = r.rows.map((row) => ({ source, ...def.row(row) }));
+  const r = await publicSearchRows(source, def.list.target, params, def.list.rowKeys, def.row);
+  let items = r.items.map(row => ({ source, ...row }));
   // relevance: 업스트림 기본 순서 + 제목 정확 포함 가산(안정 정렬)
   if (a.sort === "relevance" && a.query && !dateDefault) {
     const q = a.query.replace(/\s+/g, "");
     items = items.map((it, i) => ({ it, i, s: (it.title || "").replace(/\s+/g, "").includes(q) ? 1 : 0 })).sort((x, y) => y.s - x.s || x.i - y.i).map((x) => x.it);
   }
+  if (items.some(it => it.dataSource === "국세법령정보시스템")) notes.push("국세청 판례는 link에서 HTML 원문을 확인하세요.");
   for (const it of items) {
+    if (source === "precedent" && it.dataSource === "국세법령정보시스템") {
+      it.bodyFormat = "html";
+      it.link = precedentViewerLink(it.id);
+    }
     if (it.dataSource && (it.dataSource === it.court || it.dataSource === "대법원")) delete it.dataSource;
     if (source === "precedent" && it.kind === "판결") delete it.kind; // 기본값 생략(notes 에 명시)
     for (const k of Object.keys(it)) if (it[k] === undefined || it[k] === "" || it[k] === null) delete it[k];
@@ -61,7 +67,7 @@ export default defineTool({
     const sources = Array.isArray(a.source) ? [...new Set(a.source)] : [a.source];
     const warnings = [], notes = [];
     const results = await Promise.all(sources.map((s) => searchSource(s, a).then((r) => r, (e) => ({ source: s, error: e }))));
-    const nextFor = (it) => (SOURCES[it.source].body ? { tool: "source_get", args: { source: it.source, id: it.id }, why: `${it.title?.slice(0, 40) || it.id} 본문` } : null);
+    const nextFor = (it) => (SOURCES[it.source].body && it.bodyFormat !== "html" ? { tool: "source_get", args: { source: it.source, id: it.id }, why: `${it.title?.slice(0, 40) || it.id} 본문` } : null);
     if (sources.length === 1) {
       const r = results[0];
       if (r.error) throw r.error;

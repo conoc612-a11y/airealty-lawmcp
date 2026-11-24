@@ -89,7 +89,48 @@ export const change_feed = defineTool({
     if (a.date) { const d = parseDate(a.date); if (!d) throw invalid("date 형식 오류"); dates.push(d); }
     else { const n = a.days || 7; const today = todayKst(); for (let i = 0; i < n; i++) dates.push(addDays(today, -i)); }
     const cs = []; const warnings = [];
-    const results = await Promise.all(dates.map(async (d) => { try { const rows = []; for (let page = 1; page <= 5; page++) { const r = await search("lsHstInf", { regDt: d, display: 100, page, ...(a.org ? { org: a.org } : {}) }, { rowKeys: ["law"], ttl: TTL.list, long: true }); cs.push(cacheState(r)); rows.push(...r.rows); if (r.rows.length < 100 || rows.length >= (r.total || 0)) break; } return { d, rows }; } catch (e) { warnings.push(`${fmtDate(d)}: ${e.code || "조회 실패"}`); return { d, rows: [] }; } }));
+    const pageSize = 100;
+    const read = (d, page) => search("lsHstInf", { regDt: d, display: pageSize, page, ...(a.org ? { org: a.org } : {}) },
+      { rowKeys: ["law"], ttl: TTL.list, long: true });
+    const results = await Promise.all(dates.map(async d => {
+      try {
+        const first = await read(d, 1);
+        cs.push(cacheState(first));
+        const count = first.rows.length < pageSize ? 1 : Math.ceil(first.total / pageSize);
+        return { d, rows: first.rows.slice(), count, reported: first.total, fetched: 1 };
+      } catch (e) {
+        warnings.push(fmtDate(d) + ": " + (e.code || "조회 실패"));
+        return { d, rows: [], count: 0, fetched: 0 };
+      }
+    }));
+    // Reserve a first page for every date. Share surplus pages among busy dates.
+    // Workers Free allows 50 subrequests; leave two for other request setup.
+    const onWorker = globalThis.navigator?.userAgent === "Cloudflare-Workers";
+    const pageBudget = onWorker ? 48 : Math.max(50, dates.length * 5);
+    const jobs = [];
+    for (let page = 2; jobs.length + dates.length < pageBudget; page++) {
+      const remaining = results.filter(day => day.count >= page);
+      if (!remaining.length) break;
+      for (const day of remaining) {
+        if (jobs.length + dates.length >= pageBudget) break;
+        jobs.push({ day, page });
+      }
+    }
+    // DRF owns concurrency and request pacing. Merge in page order.
+    const pages = await Promise.allSettled(jobs.map(({ day, page }) => read(day.d, page)));
+    for (const [i, response] of pages.entries()) {
+      const { day, page } = jobs[i];
+      if (response.status === "fulfilled") {
+        cs.push(cacheState(response.value));
+        day.rows.push(...response.value.rows);
+        day.fetched++;
+      } else {
+        warnings.push(fmtDate(day.d) + " " + page + "쪽: " + (response.reason?.code || "조회 실패"));
+      }
+    }
+    for (const day of results) if (day.fetched < day.count) {
+      warnings.push(fmtDate(day.d) + ": 원천 " + day.reported + "건 중 " + day.rows.length + "건만 수신");
+    }
     const seen = new Set(); const items = []; const stats = { byKind: {}, byRevision: {}, byDate: {} };
     for (const { d, rows } of results) for (const x of rows) { const l = lawRow(x); const k = l.mst + l.effectiveDate; if (seen.has(k)) continue; seen.add(k); items.push({ changeDate: fmtDate(d), ...l, link: lawLink(l.name) }); stats.byKind[l.kind] = (stats.byKind[l.kind] || 0) + 1; stats.byRevision[l.revision] = (stats.byRevision[l.revision] || 0) + 1; stats.byDate[fmtDate(d)] = (stats.byDate[fmtDate(d)] || 0) + 1; }
     items.sort((x, y) => (y.changeDate || "").localeCompare(x.changeDate || "") || x.name.localeCompare(y.name, "ko"));

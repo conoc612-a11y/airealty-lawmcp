@@ -1,7 +1,7 @@
 // annex_get — 별표·서식 목록·본문, 하위법 자동 보충, 중복 제거, 전체 건수 (SPEC §4.4).
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
 import { locate } from "./article_get.js";
-import { fetchFullBody } from "../articles.js";
+import { fetchFullBody, lawProjection } from "../articles.js";
 import { resolveLawName, pickLawSpec } from "../resolver.js";
 import { todayKst } from "../kst.js";
 import { search, asList, str, digits } from "../upstream.js";
@@ -23,9 +23,9 @@ function parseAnnexNo(input) {
 }
 
 /** 본문(법령.별표.별표단위) → 별표 아이템. */
-function annexItems(body, law) {
+function annexItems(units, law) {
   const out = [];
-  for (const a of asList(body?.["법령"]?.["별표"]?.["별표단위"])) {
+  for (const a of units) {
     const kindKo = str(a["별표구분"]) || "별표";
     const no = parseInt(digits(a["별표번호"]) || "0", 10) || 0;
     const branch = parseInt(digits(a["별표가지번호"]) || "0", 10) || 0;
@@ -41,6 +41,19 @@ function annexItems(body, law) {
     out.push({ law: { name: law.name, kind: law.kind, mst: law.mst }, no: label, number: no, branch, title, kind, relatedArticle: rel ? rel.slice(1, -1) : undefined, text, files, deleted: text.length < 200 && /삭제/.test(text), key: `${law.mst}|${no}|${branch}|${kind}` });
   }
   return out;
+}
+
+async function fetchAnnexes(access, want) {
+  const select = body => {
+    const all = asList(body?.["법령"]?.["별표"]?.["별표단위"]);
+    const units = want ? all.filter(a => Number(digits(a["별표번호"])) === want.no &&
+      Number(digits(a["별표가지번호"])) === want.branch) : all;
+    return { hasAnnexes: all.length > 0, units };
+  };
+  if (want) return lawProjection(access, ["annex", want.no, want.branch], select,
+    value => typeof value?.hasAnnexes === "boolean" && Array.isArray(value.units));
+  const { body, hit, stale } = await fetchFullBody(access);
+  return { value: select(body), hit, stale };
 }
 
 async function lowerLaws(baseName) {
@@ -90,15 +103,15 @@ export default defineTool({
       if (!mine.length && chosen.length) notes.push(`${loc.law.name}(${loc.law.kind}) 본문에는 별표·서식이 없어 ${lawsUsed.join("·")}의 별표·서식을 보여 줍니다`);
       if (!lawsUsed.length) lawsUsed.push(loc.law.name, ...(a.includeLower ? [`${base} 시행령`, `${base} 시행규칙`] : []));
     } else {
-      loc = await locate(a, D, { prefetch: (acc) => fetchFullBody(acc) });
+      loc = await locate(a, D, { prefetch: acc => fetchAnnexes(acc, want) });
       cacheStates.push(...loc.cacheStates); warnings.push(...loc.warnings);
-      const { body, hit, stale } = loc.prefetched || await fetchFullBody(loc.access); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
-      items = annexItems(body, loc.law);
+      const { value, hit, stale } = loc.prefetched || await fetchAnnexes(loc.access, want); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
+      items = annexItems(value.units, loc.law);
       lawsUsed = [loc.law.name];
-      if (!items.length && a.includeLower) {
+      if (!value.hasAnnexes && a.includeLower) {
         const lows = await lowerLaws(loc.law.name);
-        const subs = await Promise.all(lows.map(async (l) => { try { const sub = await locate({ lawId: l.lawId }, D, { prefetch: (acc) => fetchFullBody(acc) }); const b = sub.prefetched || await fetchFullBody(sub.access); cacheStates.push(cacheState(b)); return { sub, body: b.body }; } catch (e) { warnings.push(`${l.name} 별표 조회 실패: ${e.code || "오류"}`); return null; } }));
-        for (const s of subs) if (s) { items.push(...annexItems(s.body, s.sub.law)); lawsUsed.push(s.sub.law.name); }
+        const subs = await Promise.all(lows.map(async (l) => { try { const sub = await locate({ lawId: l.lawId }, D, { prefetch: acc => fetchAnnexes(acc, want) }); const b = sub.prefetched || await fetchAnnexes(sub.access, want); cacheStates.push(cacheState(b)); return { sub, units: b.value.units }; } catch (e) { warnings.push(`${l.name} 별표 조회 실패: ${e.code || "오류"}`); return null; } }));
+        for (const s of subs) if (s) { items.push(...annexItems(s.units, s.sub.law)); lawsUsed.push(s.sub.law.name); }
         if (lows.length) notes.push(`${loc.law.name}(${loc.law.kind}) 본문에는 별표·서식이 없어 ${lows.map((l) => l.name).join("·")}의 별표·서식을 보여 줍니다`);
       }
     }

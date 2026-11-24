@@ -9,14 +9,15 @@ Claude(또는 MCP 를 지원하는 다른 AI 도구)에서 대한민국 법령·
 
 ### 준비물
 - 운영자에게 받은 **토큰** (`lm_` 로 시작하는 긴 문자열). 토큰은 비밀번호와 같습니다. 남에게 보여 주거나 공개 저장소·채팅방에 올리지 마세요.
-- 서버 주소: `https://law.airealty.co.kr/mcp`
+- 기본 서버 주소: `https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2`
+- 기존 연결 주소: `https://law.airealty.co.kr/mcp`
 
 ### A-1. Claude Code (터미널)
 
 터미널(PowerShell·macOS 터미널·Linux 셸)에서 아래 한 줄을 실행합니다. `<토큰>` 자리에 받은 값을 넣습니다.
 
 ```bash
-claude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --header "Authorization: Bearer <토큰>"
+claude mcp add --transport http airealty-law "https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2" --header "Authorization: Bearer <토큰>"
 ```
 
 확인:
@@ -25,7 +26,7 @@ claude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --he
 claude mcp list
 ```
 
-`airealty-law: https://law.airealty.co.kr/mcp (HTTP) - ✔ Connected` 가 보이면 끝입니다.
+`airealty-law: https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2 (HTTP) - ✔ Connected` 가 보이면 끝입니다.
 이미 열려 있던 Claude Code 세션에는 나타나지 않으니 **새 세션**을 여세요.
 
 사용 예(대화창에 그대로 입력):
@@ -43,7 +44,7 @@ claude mcp remove airealty-law
 ### A-2. Claude 앱 (claude.ai 웹·데스크톱·모바일)
 
 1. **설정 → 커넥터(Connectors)** → **커스텀 커넥터 추가**
-2. 이름: `airealty 법령` · 원격 MCP 서버 URL: `https://law.airealty.co.kr/mcp`
+2. 이름: `airealty 법령` · 원격 MCP 서버 URL: `https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2`
 3. **고급 설정 → 요청 헤더**에 이름 `Authorization`, 값 `Bearer <토큰>` 입력 → 추가
 4. 대화창의 도구 메뉴(🔧)에서 커넥터를 켭니다.
 
@@ -57,7 +58,7 @@ claude mcp remove airealty-law
 {
   "mcpServers": {
     "airealty-law": {
-      "url": "https://law.airealty.co.kr/mcp",
+      "url": "https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2",
       "headers": { "Authorization": "Bearer <토큰>" }
     }
   }

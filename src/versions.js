@@ -1,12 +1,22 @@
 // 판(버전) 목록과 기준일 판 선택 (SPEC §3.5). 한 MST 가 시행일이 다른 여러 판(분할 시행)으로 나올 수 있어 키는 (mst, efYd).
-import { search, service, lawRow, digits, str, asList } from "./upstream.js";
+import { getDocumentStore, search, service, lawRow, digits, str, asList } from "./upstream.js";
 import { cache, TTL } from "./cache.js";
 import { fmtDate, todayKst, msUntilKstMidnight } from "./kst.js";
+import { requestKey } from "./drf.js";
 import { LawError, invalid } from "./errors.js";
 import { resolveLawName } from "./resolver.js";
 import { cacheState } from "./envelope.js";
 import { normalizeName } from "./dictionary.js";
 import { cacheDir, readDisk, writeDisk } from "./diskcache.js";
+
+// 이름 검색의 선행 조회와 후속 보강이 같은 목록을 기다리도록 한다.
+const pendingVersionLists = new Map();
+const versionListKey = lawId => "version-list:v1:" + lawId;
+const pageParams = (lawId, page) => ({ LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" });
+export function versionDocumentKeys(lawId) {
+  const firstPage = "drf:" + requestKey("lawSearch.do", { target: "eflaw", ...pageParams(lawId, 1) });
+  return [versionListKey(lawId), firstPage];
+}
 
 /** 법령ID → 판 목록(시행일 내림차순). 각 {mst, efYd, effectiveDate, promulgationDate, promulgationNo, revision, statusCode}. */
 export async function listVersions(lawId) {
@@ -14,18 +24,42 @@ export async function listVersions(lawId) {
   const key = `versions:${lawId}`;
   const directory = cacheDir();
   const warm = cache.get(key, now);
-  if (warm?.directory === directory) return { ...warm.value, hit: true };
+  if (warm?.directory === directory) return { ...warm.value, hit: true, expiresAt: cache.expiresAt(key) };
   const dk = readDisk("versions", lawId, now);
   const ttl = Math.min(TTL.resolve, msUntilKstMidnight(now));
   if (dk && dk.ageMs < TTL.resolve && todayKst(dk.savedAt) === todayKst(now) && Array.isArray(dk.value?.versions) && dk.value.versions.length) {
     cache.set(key, { directory, value: dk.value }, Math.min(ttl, TTL.resolve - dk.ageMs), now);
-    return { ...dk.value, hit: true };
+    return { ...dk.value, hit: true, expiresAt: cache.expiresAt(key) };
   }
-  return fetchVersions(lawId, key, directory, now, ttl);
+  const store = getDocumentStore();
+  if (!store) return fetchVersions(lawId, key, directory, now, ttl);
+  const pendingKey = JSON.stringify([directory, lawId]);
+  if (!pendingVersionLists.has(pendingKey)) {
+    const load = readVersionList(store, lawId, key, directory, now, ttl);
+    pendingVersionLists.set(pendingKey, load.finally(() => pendingVersionLists.delete(pendingKey)));
+  }
+  return pendingVersionLists.get(pendingKey);
 }
-async function fetchVersions(lawId, key, directory, started, ttl) {
+async function readVersionList(store, lawId, key, directory, started, ttl) {
+  const [sharedKey, firstPageKey] = versionDocumentKeys(lawId);
+  const row = await store.get(sharedKey, firstPageKey);
+  const expiresAt = Math.min(row?.expiresAt ?? 0, started + ttl);
+  const now = Date.now();
+  if (expiresAt > now && Array.isArray(row.data?.versions) && row.data.versions.length) {
+    cache.set(key, { directory, value: row.data }, expiresAt - now, now);
+    return { ...row.data, hit: true, stale: false, expiresAt };
+  }
+  const result = await fetchVersions(lawId, key, directory, started, ttl, true);
+  if (!result.stale && result.versions.length && result.expiresAt > Date.now()) {
+    const { versions, name, kind } = result;
+    await store.put(sharedKey, { versions, name, kind }, started, result.expiresAt);
+  }
+  return result;
+}
+
+async function fetchVersions(lawId, key, directory, started, ttl, readOnlyStore = false) {
   const rows = []; let hit = true; let stale = false; let name = "", kind = "";
-  const fetchPage = (page) => search("eflaw", { LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" }, { rowKeys: ["law"], ttl, validUntil: started + ttl });
+  const fetchPage = (page) => search("eflaw", pageParams(lawId, page), { rowKeys: ["law"], ttl, validUntil: started + ttl, readOnlyStore });
   const first = await fetchPage(1);
   const pages = [first];
   const need = Math.min(5, Math.ceil((first.total || 0) / 100));
@@ -42,13 +76,14 @@ async function fetchVersions(lawId, key, directory, started, ttl) {
   const seen = new Set(); const out = [];
   for (const v of rows) { const k = v.mst + ":" + v.efYd; if (!seen.has(k) && /^\d{8}$/.test(v.efYd)) { seen.add(k); out.push(v); } }
   out.sort((a, b) => b.efYd.localeCompare(a.efYd) || b.mst.localeCompare(a.mst));
-  // 캐시에서 읽은 페이지와 장애 폴백은 원래 만료 시각을 연장하지 않는다.
-  if (out.length && pages.every((page) => !page.hit && !page.stale) && Date.now() < started + ttl && cacheDir() === directory) {
+  const expiresAt = Math.min(started + ttl, ...pages.map(page => page.expiresAt));
+  if (out.length && !stale && expiresAt > Date.now() && cacheDir() === directory) {
     const value = { versions: out, name, kind };
-    writeDisk("versions", lawId, value, started);
-    cache.set(key, { directory, value }, ttl, started);
+    if (pages.every(page => !page.hit)) writeDisk("versions", lawId, value, started);
+    // 가공한 목록도 가장 먼저 만료되는 원본 페이지까지만 재사용한다.
+    cache.set(key, { directory, value }, expiresAt - started, started);
   }
-  return { versions: out, name, kind, hit, stale };
+  return { versions: out, name, kind, hit, stale, expiresAt };
 }
 
 /** 기준일 D 에 대한 적용 판과 시행예정 판. 기준일 이전 판이 없으면 LAW_NOT_FOUND(대체 금지). */
@@ -74,12 +109,14 @@ export const statusOf = (v, D) => (v.efYd > D ? "upcoming" : v.statusCode === "�
  */
 export async function resolveLaw(spec, asOfYmd) {
   const D = asOfYmd || todayKst();
+  let expiresAt = Infinity;
   let lawId = spec.lawId, resolved = null; const cacheStates = [];
   if (!lawId && spec.name) { resolved = await resolveLawName(spec.name); lawId = resolved.lawId; cacheStates.push(resolved.cache); }
   if (!lawId && spec.mst) {
     // eflaw 는 MST 에 efYd 가 필수라 법령ID 를 모를 땐 law target(MST 단독 허용)으로 기본정보만 받는다(JO 지정으로 작게)
-    const { data, hit, stale } = await service("law", { MST: spec.mst, JO: "000100" }, { long: true });
+    const { data, hit, stale, expiresAt: mappingExpiry } = await service("law", { MST: spec.mst, JO: "000100" }, { long: true });
     cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
+    expiresAt = mappingExpiry;
     lawId = str(data?.["법령"]?.["기본정보"]?.["법령ID"]);
     if (!lawId) throw new LawError("LAW_NOT_FOUND", `MST ${spec.mst} 에 해당하는 법령 없음`, { retryable: false });
   }
@@ -107,7 +144,7 @@ export async function resolveLaw(spec, asOfYmd) {
   }
   const law = { name: vl.name, kind: vl.kind, lawId, mst: chosen.mst, effectiveDate: chosen.effectiveDate, promulgationDate: chosen.promulgationDate, promulgationNo: chosen.promulgationNo, status: statusOf(chosen, D), upcoming: upcoming.map((u) => ({ mst: u.mst, effectiveDate: u.effectiveDate, promulgationDate: u.promulgationDate, revision: u.revision })) };
   if (resolved?.expandedFrom) warnings.push(`약칭 '${resolved.expandedFrom}' → '${vl.name}' 으로 해석`);
-  return { law, chosen, upcoming, versions: vl.versions, cacheStates, warnings, asOf: D };
+  return { law, chosen, upcoming, versions: vl.versions, cacheStates, warnings, asOf: D, expiresAt: Math.min(vl.expiresAt, expiresAt) };
 }
 
 export { asList };

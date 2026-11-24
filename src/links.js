@@ -11,6 +11,7 @@ export function lawLink(name, ref) {
 }
 export const adminRuleLink = (name) => `${SITE}/행정규칙/${encodeURIComponent(name)}`;
 export const ordinanceLink = (name) => `${SITE}/자치법규/${encodeURIComponent(name)}`;
+export const precedentViewerLink = id => SITE + "/LSW/precInfoP.do?precSeq=" + encodeURIComponent(String(id)) + "&mode=0";
 export const precedentLink = (id) => `${SITE}/판례/(${encodeURIComponent(String(id))})`;
 export const interpretationLink = (id) => `${SITE}/법령해석례/(${encodeURIComponent(String(id))})`;
 export const treatyLink = (id) => `${SITE}/조약/(${encodeURIComponent(String(id))})`;

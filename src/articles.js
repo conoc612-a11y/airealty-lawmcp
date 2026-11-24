@@ -1,5 +1,6 @@
 // 조문 본문 받기·구조화 (SPEC §4.2). 업스트림이 준 항·호·목 구조를 그대로 트리로, 원문 기호(①, 1., 가.) 보존.
 import { service, asList, str, digits } from "./upstream.js";
+import { readPrepared, writePrepared } from "./prepared_documents.js";
 import { TTL } from "./cache.js";
 import { fmtDate } from "./kst.js";
 import { articleLabel, toJoCode, circledToNumber } from "./jo.js";
@@ -79,16 +80,36 @@ export async function fetchArticle({ lawId, mst, efYd, useId }, ref) {
   const JO = toJoCode(ref);
   if (!JO) throw new LawError("INVALID_INPUT", "조문 번호 범위 밖", { retryable: false });
   const params = useId ? { ID: lawId, JO } : { MST: mst, efYd, JO };
-  const { data, hit, stale } = await service("eflaw", params, { ttl: TTL.body });
+  const { data, hit, stale, expiresAt } = await service("eflaw", params, { ttl: TTL.body });
   const units = articleUnits(data).filter((u) => parseInt(digits(u["조문번호"]), 10) === ref.article && (parseInt(digits(u["조문가지번호"]) || "0", 10) || 0) === (ref.branch || 0));
-  return { units, meta: lawMetaFromBody(data), hit, stale: !!stale, raw: data };
+  return { units, meta: lawMetaFromBody(data), hit, stale: !!stale, expiresAt, raw: data };
 }
 
 /** 법령 전체 본문(목차·전체 조문·별표·부칙). 큰 응답이라 20초 타임아웃. */
 export async function fetchFullBody({ lawId, mst, efYd, useId }) {
   const params = useId ? { ID: lawId } : { MST: mst, efYd };
-  const { data, hit, stale } = await service("eflaw", params, { ttl: TTL.body, long: true });
-  return { body: data, hit, stale: !!stale };
+  const { data, hit, stale, expiresAt } = await service("eflaw", params, { ttl: TTL.body, long: true });
+  return { body: data, hit, stale: !!stale, expiresAt };
+}
+
+/** 지정한 판의 목차나 별표만 재사용한다. 현행 ID 응답은 법령 본문의 자정 제한을 따른다. */
+export async function lawProjection(access, part, select, accepts) {
+  const identity = access.useId ? ["ID", access.lawId] : ["MST", access.mst, access.efYd];
+  const key = "law-part:v1:" + JSON.stringify([identity, part]);
+  const started = Date.now();
+  const existing = await readPrepared(key, accepts);
+  if (existing !== undefined) return { value: existing, hit: true };
+  const { body, hit, stale, expiresAt } = await fetchFullBody(access);
+  const value = select(body);
+  if (!stale && body?.["법령"]?.["기본정보"] && accepts(value)) {
+    await writePrepared(key, value, started, expiresAt);
+  }
+  return { value, hit, stale };
+}
+
+export async function fetchToc(access) {
+  const result = await lawProjection(access, "toc", tocUnits, Array.isArray);
+  return { ...result, value: result.value.map(row => ({ ...row })) };
 }
 
 /** 유효 조문 범위와 가까운 조문(없는 조문 안내용). */

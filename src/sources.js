@@ -62,17 +62,17 @@ export const SOURCES = {
   admin_rule: {
     label: "행정규칙", list: { target: "admrul", rowKeys: ["admrul"], supports: { body: true, sort: { relevance: "", date_desc: "ddes", date_asc: "dasc" }, org: "org", date: "prmlYd", allowEmptyQuery: true } },
     row: (r) => ({ id: str(r["행정규칙일련번호"]), title: str(r["행정규칙명"]), caseNo: str(r["발령번호"]) || undefined, agency: str(r["소관부처명"]), date: D(r["발령일자"]), kind: str(r["행정규칙종류"]), link: adminRuleLink(str(r["행정규칙명"])), ruleId: str(r["행정규칙ID"]) || undefined, effectiveDate: D(r["시행일자"]) || undefined, status: str(r["현행연혁구분"]) || undefined }),
-    body: { target: "admrul", rootKey: "AdmRulService", idKey: "행정규칙일련번호", title: "행정규칙명", caseNo: "발령번호", agency: "소관부처명", date: "발령일자", sections: ["조문내용", "부칙", "별표", "개정문내용", "제개정이유내용"], link: (id, b) => adminRuleLink(str(b?.["행정규칙명"])) },
+    body: { target: "admrul", rootKey: "AdmRulService", info: "행정규칙기본정보", idKey: "행정규칙일련번호", title: "행정규칙명", caseNo: "발령번호", agency: "소관부처명", date: "발령일자", sections: ["조문내용", "부칙", "별표", "개정문내용", "제개정이유내용"], link: (id, b) => adminRuleLink(str(b?.["행정규칙명"])) },
   },
   ordinance: {
     label: "자치법규", list: { target: "ordin", rowKeys: ["law"], supports: { body: true, sort: { relevance: "", date_desc: "ddes", date_asc: "dasc" }, region: "org", date: "ancYd", allowEmptyQuery: true } },
     row: (r) => ({ id: str(r["자치법규일련번호"]), title: str(r["자치법규명"]), caseNo: str(r["공포번호"]) || undefined, agency: str(r["지자체기관명"]), date: D(r["공포일자"]), kind: str(r["자치법규종류"]), link: ordinanceLink(str(r["자치법규명"])), ordinanceId: str(r["자치법규ID"]) || undefined, effectiveDate: D(r["시행일자"]) || undefined }),
-    body: { target: "ordin", rootKey: "LawService", idKey: "자치법규일련번호", idParam: "MST", title: "자치법규명", caseNo: "공포번호", agency: "지자체기관명", date: "공포일자", sections: ["조문", "부칙", "별표", "개정문내용", "제개정이유내용"], link: (id, b) => ordinanceLink(str(b?.["자치법규명"])) },
+    body: { target: "ordin", rootKey: "LawService", info: "자치법규기본정보", idKey: "자치법규일련번호", idParam: "MST", title: "자치법규명", caseNo: "공포번호", agency: "지자체기관명", date: "공포일자", sections: ["조문", "부칙", "별표", "개정문내용", "제개정이유내용"], link: (id, b) => ordinanceLink(str(b?.["자치법규명"])) },
   },
   treaty: {
     label: "조약", list: { target: "trty", rowKeys: ["Trty", "trty"], supports: { body: true, sort: { relevance: "", date_desc: "ddes", date_asc: "dasc" }, date: "eftYd" } },
     row: (r) => ({ id: str(r["조약일련번호"]), title: str(r["조약명"]), caseNo: str(r["조약번호"]) || undefined, agency: "외교부", date: D(r["발효일자"]), kind: str(r["조약구분명"]), link: treatyLink(str(r["조약일련번호"])), signedDate: D(r["서명일자"]) || undefined }),
-    body: { target: "trty", rootKey: "TrtyService", idKey: "조약일련번호", title: "조약명_한글", caseNo: "조약번호", agency: () => "외교부", date: "발효일자", sections: ["조약내용", "비고", "추가정보"], link: (id) => treatyLink(id) },
+    body: { target: "trty", rootKey: "TrtyService", info: "조약기본정보", idKey: "조약일련번호", title: "조약명_한글", caseNo: "조약번호", agency: () => "외교부", date: "발효일자", sections: ["조약내용", "비고", "추가정보"], link: (id) => treatyLink(id) },
   },
   school_rule: schoolLike("school", "학칙"),
   public_corp_rule: schoolLike("public", "지방공사·공단 규정"),
@@ -80,7 +80,7 @@ export const SOURCES = {
   english: {
     label: "영문법령", list: { target: "elaw", rowKeys: ["law"], supports: { body: true, sort: { relevance: "", date_desc: "ddes", date_asc: "dasc" }, date: "ancYd", allowEmptyQuery: true } },
     row: (r) => ({ id: str(r["법령일련번호"]), title: str(r["법령명영문"]).replace(/<[^>]+>/g, ""), caseNo: str(r["공포번호"]) || undefined, agency: str(r["소관부처명"]).split(",")[0], date: D(r["시행일자"]), kind: str(r["법령구분명"]), link: null, koreanName: str(r["법령명한글"]), lawId: str(r["법령ID"]) || undefined }),
-    body: { target: "elaw", rootKey: null, idKey: null, idParam: "MST", title: null, sections: null, link: () => null },
+    body: { target: "elaw", rootKey: "Law", info: "InfSection", idKey: null, idParam: "MST", title: "lsNmEng", caseNo: "ancNo", date: "ancYd", sections: ["조문", "부칙"], link: () => null },
   },
 };
 
@@ -95,7 +95,7 @@ function schoolLike(target, label) {
   return {
     label, list: { target, rowKeys: ["admrul"], supports: { body: true, sort: { relevance: "", date_desc: "ddes", date_asc: "dasc" }, date: "prmlYd" } },
     row: (r) => ({ id: str(r["행정규칙일련번호"]), title: str(r["행정규칙명"]), caseNo: str(r["발령번호"]) || undefined, agency: str(r["소관부처명"]), date: D(r["발령일자"]), kind: str(r["행정규칙종류"]), link: null, ruleId: str(r["행정규칙ID"]) || undefined }),
-    body: { target, rootKey: "AdmRulService", idKey: "행정규칙일련번호", title: "행정규칙명", caseNo: "발령번호", agency: "소관부처명", date: "발령일자", sections: ["조문내용", "부칙내용", "개정문내용", "제개정이유내용"], link: () => null },
+    body: { target, rootKey: "AdmRulService", info: "행정규칙기본정보", idKey: "행정규칙일련번호", title: "행정규칙명", caseNo: "발령번호", agency: "소관부처명", date: "발령일자", sections: ["조문내용", "부칙내용", "개정문내용", "제개정이유내용"], link: () => null },
   };
 }
 function resultFromTitle(t) { const m = t.match(/\((인용|기각|각하|취소|일부인용|경정|재조사)\)\s*$/); return m ? m[1] : null; }

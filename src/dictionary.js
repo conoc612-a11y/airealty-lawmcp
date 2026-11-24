@@ -137,11 +137,33 @@ export function dictionary() { return state; }
 export function loadDictionarySync() { if (!state.entries.length) { const d = readDisk(); if (d) state = d; } return state; }
 export function _setDictionary(d) { state = { entries: d.entries || [], abbreviations: d.abbreviations || [], loadedAt: d.loadedAt ?? Date.now(), source: "test" }; }
 
+let nameLookup;
+function lookup() {
+  if (nameLookup?.state === state) return nameLookup;
+  const exact = new Map(), abbreviations = new Map();
+  const entries = state.entries.map(entry => {
+    const norm = normalizeName(entry.n);
+    if (!exact.has(norm)) exact.set(norm, entry);
+    return { norm, entry };
+  });
+  for (const a of state.abbreviations || []) {
+    const norm = normalizeName(a.abbr);
+    const previous = abbreviations.get(norm);
+    if (!previous || (!previous.current && a.current)) abbreviations.set(norm, a);
+  }
+  nameLookup = { state, entries, exact, abbreviations };
+  return nameLookup;
+}
+
+export function exactDictionaryEntry(name) { return lookup().exact.get(normalizeName(name)); }
+
+export function* matchingDictionaryEntries(normalized) {
+  for (const { norm, entry } of lookup().entries) if (norm.includes(normalized)) yield entry;
+}
+
 /** 약칭 → 정식명(현행 우선). 없으면 null. */
 export function expandAbbreviation(name) {
-  const n = normalizeName(name);
-  const hits = state.abbreviations.filter((a) => normalizeName(a.abbr) === n);
-  const pick = hits.find((h) => h.current) || hits[0];
+  const pick = lookup().abbreviations.get(normalizeName(name));
   return pick ? pick.name : null;
 }
 

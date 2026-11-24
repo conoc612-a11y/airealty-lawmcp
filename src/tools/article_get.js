@@ -1,13 +1,15 @@
 // article_get — 조문 원문(한 개·여러 개·목차), 기준일 판 선택, 전문·절단 없음 (SPEC §4.2).
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
 import { pickLawSpec, resolveLawName } from "../resolver.js";
-import { resolveLaw } from "../versions.js";
-import { fetchArticle, fetchFullBody, buildArticle, tocUnits, splitArticleByParagraph } from "../articles.js";
+import { resolveLaw, versionDocumentKeys } from "../versions.js";
+import { fetchArticle, fetchToc, buildArticle, splitArticleByParagraph } from "../articles.js";
 import { getArticleIndex, rangeOf, nearestFromIndex } from "../article_index.js";
-import { parseArticleRef, formatArticleRef, sameArticle } from "../jo.js";
+import { parseArticleRef, formatArticleRef, sameArticle, toJoCode } from "../jo.js";
 import { LawError, invalid } from "../errors.js";
 import { mergeCache, paginateByBytes, cacheState } from "../envelope.js";
-import { todayKst } from "../kst.js";
+import { readPrepared, writePrepared } from "../prepared_documents.js";
+import { getDocumentStore } from "../upstream.js";
+import { msUntilKstMidnight, todayKst } from "../kst.js";
 
 /** 공통: 법령 확정 + 판 선택 → 본문 접근 방법(useId: 현행 판을 ID 로 1왕복). */
 export async function locate(args, D, { prefetch } = {}) {
@@ -23,6 +25,46 @@ export async function locate(args, D, { prefetch } = {}) {
   const access = { lawId: r.law.lawId, mst: r.chosen.mst, efYd: r.chosen.efYd, useId };
   const prefetched = early && useId && early.lawId === access.lawId ? await early.promise : null;
   return { ...r, access, prefetched };
+}
+
+/** 판 정보와 원본 조문 단위를 함께 보관한다. 항·호 선택과 출력 형식은 요청마다 적용한다. */
+async function loadArticleSet(args, date, refs) {
+  const fetchUnits = access => Promise.all(refs.map(ref => fetchArticle(access, ref)));
+  if (!refs.length) return locate(args, date, { prefetch: fetchToc });
+  const store = getDocumentStore();
+  if (!store) return locate(args, date, { prefetch: fetchUnits });
+  if (args.name && !args.lawId && !args.mst) {
+    const resolved = await resolveLawName(args.name);
+    const result = await loadArticleSet({ ...args, name: undefined, lawId: resolved.lawId }, date, refs);
+    const warnings = [...result.warnings];
+    if (resolved.expandedFrom) warnings.push(`약칭 '${resolved.expandedFrom}' → '${result.law.name}' 으로 해석`);
+    return { ...result, warnings, cacheStates: [resolved.cache, ...result.cacheStates] };
+  }
+  if (args.name || (!args.lawId && !args.mst)) return locate(args, date, { prefetch: fetchUnits });
+
+  const started = Date.now();
+  const codes = refs.map(toJoCode);
+  if (codes.some(code => !code)) throw invalid("조문 번호 범위 밖");
+  const sorted = [...codes].sort();
+  const spec = pickLawSpec(args);
+  const key = "article-set:v2:" + JSON.stringify([spec.lawId, spec.mst, date, sorted]);
+  const entry = await readPrepared(key, value => value?.law?.lawId && Array.isArray(value.warnings) &&
+    value.parts && codes.every(code => Array.isArray(value.parts[code]) && value.parts[code].length),
+    spec.lawId ? versionDocumentKeys(spec.lawId) : undefined);
+  if (entry) return {
+    law: structuredClone(entry.law), warnings: entry.warnings, cacheStates: ["hit"],
+    prefetched: codes.map(code => ({ units: entry.parts[code], hit: true })),
+  };
+
+  const loc = await locate(args, date, { prefetch: fetchUnits });
+  loc.prefetched ??= await fetchUnits(loc.access);
+  const expiresAt = Math.min(started + msUntilKstMidnight(started), loc.expiresAt, ...loc.prefetched.map(result => result.expiresAt));
+  const now = Date.now();
+  if (expiresAt > now && !loc.cacheStates.includes("stale") && loc.prefetched.every(result => !result.stale && result.units.length)) {
+    const parts = Object.fromEntries(loc.prefetched.map((result, i) => [codes[i], result.units]));
+    await writePrepared(key, { law: structuredClone(loc.law), warnings: loc.warnings, parts }, started, expiresAt);
+  }
+  return loc;
 }
 
 /** 항·호·목 범위 선택(요청이 제8조제1항제2호 같으면 그 단위만 남기되 상위 제목 유지). */
@@ -70,7 +112,7 @@ export default defineTool({
     const D = asOfYmd(a.asOf);
     const refs0 = (a.articles || []).map((s) => { const r = parseArticleRef(s); if (!r) throw invalid(`조문 표기를 읽을 수 없음: ${s}`); return r; });
     const uniq0 = []; for (const r of refs0) if (!uniq0.some((u) => sameArticle(u, r))) uniq0.push(r);
-    const loc = await locate(a, D, { prefetch: (acc) => (uniq0.length ? Promise.all(uniq0.map((ref) => fetchArticle(acc, ref))) : fetchFullBody(acc)) });
+    const loc = await loadArticleSet(a, D, uniq0);
     const { law, access } = loc;
     const warnings = [...loc.warnings], notes = [];
     const cacheStates = [...loc.cacheStates];
@@ -78,9 +120,8 @@ export default defineTool({
     if (law.upcoming.length) warnings.push(`시행예정 개정 있음: 시행일 ${[...new Set(law.upcoming.map((u) => u.effectiveDate))].join(", ")} — 이 조문 변경 여부는 statute_history(article_changes) 로 확인`);
     // ── 목차 모드 ──
     if (!a.articles || !a.articles.length) {
-      const { body, hit, stale } = loc.prefetched || await fetchFullBody(access);
+      const { value: toc, hit, stale } = loc.prefetched || await fetchToc(access);
       cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
-      const toc = tocUnits(body);
       const pg = paginateByBytes(toc, { maxBytes: a.maxBytes, part: a.part });
       return ok({ items: pg.items, total: toc.length, page: { no: pg.part, size: pg.items.length, hasMore: pg.hasMore }, warnings, notes: ["목차 모드: 본문 없음. 조문 본문은 articles 에 표기를 넣어 다시 부르세요"], cacheState: mergeCache(cacheStates), asOf: D,
         next: [{ tool: "article_get", args: { lawId: law.lawId, articles: [toc.find((t) => t.label)?.label || "제1조"] }, why: "첫 조문 본문" }, ...(pg.hasMore ? [{ tool: "article_get", args: { lawId: law.lawId, part: pg.part + 1 }, why: "목차 이어받기" }] : [])],

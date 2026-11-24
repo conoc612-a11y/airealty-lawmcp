@@ -4,7 +4,7 @@ import { locate } from "./article_get.js";
 import { service, search, asList, str, digits } from "../upstream.js";
 import { TTL } from "../cache.js";
 import { fmtDate } from "../kst.js";
-import { fetchFullBody, tocUnits } from "../articles.js";
+import { fetchToc } from "../articles.js";
 import { articleLabel, toJoCode } from "../jo.js";
 import { parseArticleRef } from "../jo.js";
 import { lawLink, adminRuleLink } from "../links.js";
@@ -95,12 +95,12 @@ export default defineTool({
   schema: { ...S.lawSpec, view: z.enum(["toc", "hierarchy", "delegation", "related"]).default("hierarchy"), article: z.string().max(40).optional().describe("delegation 에서 특정 조문만"), delegationKind: z.enum(["delegated", "cited"]).default("delegated"), asOf: S.asOf, page: S.page, size: S.size(50) },
   async handler(a) {
     const D = asOfYmd(a.asOf);
-    const loc = await locate(a, D);
+    const loc = await locate(a, D, { prefetch: a.view === "toc" ? fetchToc : undefined });
     const { law, access } = loc; const cacheStates = [...loc.cacheStates]; const warnings = [...loc.warnings]; const notes = [];
     const nextArticle = (label) => ({ tool: "article_get", args: { lawId: law.lawId, articles: [label] }, why: `${law.name} ${label} 원문` });
     if (a.view === "toc") {
-      const { body, hit, stale } = await fetchFullBody(access); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
-      const toc = tocUnits(body); const tree = []; let cur = null;
+      const { value: toc, hit, stale } = loc.prefetched || await fetchToc(access); cacheStates.push(stale ? "stale" : hit ? "hit" : "miss");
+      const tree = []; let cur = null;
       for (const t of toc) { if (t.heading) { cur = { heading: t.heading, articles: [] }; tree.push(cur); } else { if (!cur) { cur = { heading: "", articles: [] }; tree.push(cur); } cur.articles.push({ label: t.label, title: t.title, ...(t.status ? { status: t.status } : {}) }); } }
       const first = toc.find((t) => t.label);
       return ok({ items: tree, total: toc.filter((t) => t.label).length, warnings, notes, cacheState: mergeCache(cacheStates), asOf: D, next: first ? [nextArticle(first.label)] : [], extra: { law } });

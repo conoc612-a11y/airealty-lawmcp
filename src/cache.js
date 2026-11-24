@@ -20,6 +20,7 @@ export class LruCache {
     this.hits++;
     return e.value;
   }
+  expiresAt(key) { return this.map.get(key)?.exp ?? 0; }
   has(key, now = Date.now()) { return this.get(key, now) !== undefined; }
   set(key, value, ttlMs, now = Date.now()) {
     const k = apiKey();

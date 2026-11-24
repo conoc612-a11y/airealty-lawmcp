@@ -1,5 +1,5 @@
 // 법령명 해석 — 모든 도구가 공유하는 단일 함수 (SPEC §3.4). 정확 일치가 있으면 무조건 그것.
-import { ensureDictionary, dictionary, normalizeName, expandAbbreviation } from "./dictionary.js";
+import { ensureDictionary, dictionary, normalizeName, expandAbbreviation, matchingDictionaryEntries } from "./dictionary.js";
 import { search, lawRow } from "./upstream.js";
 import { cache, TTL } from "./cache.js";
 import { msUntilKstMidnight, todayKst } from "./kst.js";
@@ -30,9 +30,8 @@ export function fromDictionary(norm) {
   const d = dictionary();
   if (!d.entries.length) return null;
   const out = [];
-  for (const e of d.entries) {
-    const n = normalizeName(e.n);
-    if (n.includes(norm)) out.push({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, status: "current" });
+  for (const e of matchingDictionaryEntries(norm)) {
+    out.push({ name: e.n, kind: e.k, lawId: e.i, mst: e.m, effectiveDate: e.e, status: "current" });
   }
   return out;
 }

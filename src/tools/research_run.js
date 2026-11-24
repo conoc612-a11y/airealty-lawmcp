@@ -45,12 +45,41 @@ export function routeSources(lawNames) {
   return [...out];
 }
 
+// A full-text hit can mention housing only in passing. Keep exact title
+// matches and interpretations whose title identifies a relevant statute.
+function housingInterpretations(items, query, laws) {
+  const phrase = normalizeName(query);
+  const names = new Set(laws.map(normalizeName));
+  return items.filter(item => {
+    const title = item.title || "";
+    if (normalizeName(title).includes(phrase)) return true;
+    return [...title.matchAll(/[「『]([^」』]+)[」』]/g)].some(([, name]) =>
+      names.has(normalizeName(name)) || names.has(normalizeName(name.replace(/\s*시행(?:령|규칙)$/, "")))
+    );
+  });
+}
+
+function distinctJudgments(items) {
+  const seen = new Set();
+  // Prefer Supreme Court rulings on the cited provision. Keep the original
+  // search order within each court tier, including lower-court decisions.
+  const ranked = [...items].sort((a, b) => Number(b.court === "대법원") - Number(a.court === "대법원"));
+  return ranked.filter(item => {
+    const key = item.caseNo && item.court && item.date
+      ? [item.court, item.caseNo.replace(/\s/g, ""), item.date, item.kind || ""].join("|")
+      : item.id;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 /** 도구 호출 1단계: 봉투를 요약 행으로 줄인다(원문 제외). */
 function summarize(body, limit = 8) {
   if (!body?.ok) return { ok: false, error: body?.error };
   const strip = (it) => { if (!it || typeof it !== "object") return it; const { text, head, paragraphs, sections, amendmentNotes, children, ...rest } = it; if (rest.article && typeof rest.article === "object") { const { text: t2, paragraphs: p2, ...a2 } = rest.article; rest.article = a2; } return rest; };
   const items = Array.isArray(body.items) ? body.items.slice(0, limit).map(strip) : body.items;
-  return { ok: true, total: body.total, items, ...(body.law ? { law: { name: body.law.name, lawId: body.law.lawId, mst: body.law.mst, effectiveDate: body.law.effectiveDate, upcoming: body.law.upcoming } } : {}), ...(body.summary ? { summary: body.summary } : {}), warnings: body.warnings?.length ? body.warnings : undefined };
+  return { ok: true, total: body.total, items, ...(body.source ? { source: body.source } : {}), ...(body.law ? { law: { name: body.law.name, lawId: body.law.lawId, mst: body.law.mst, effectiveDate: body.law.effectiveDate, upcoming: body.law.upcoming } } : {}), ...(body.summary ? { summary: body.summary } : {}), warnings: body.warnings?.length ? body.warnings : undefined };
 }
 
 export default defineTool({
@@ -62,10 +91,15 @@ export default defineTool({
     const startReq = stats.requests;
     const steps = []; const warnings = []; const next = [];
     const over = () => stats.requests - startReq >= limit;
-    const run = async (name, tool, args, lim) => {
+    const run = async (name, tool, args, lim, select) => {
       if (over()) { steps.push({ name, ok: false, skipped: true, error: { code: "BUDGET", message: `업스트림 호출 상한(${limit}) 도달` } }); return null; }
       const body = await tool.invoke(args);
-      const s = summarize(body, lim);
+      const matches = select && body.ok ? select(body.items || []) : null;
+      const s = summarize(matches ? { ...body, items: matches } : body, lim);
+      if (matches) {
+        s.candidatesExamined = body.items?.length || 0;
+        s.candidatesKept = matches.length;
+      }
       steps.push({ name, ...s, args });
       if (!body.ok) warnings.push(`${name}: ${body.error?.code}`);
       return body.ok ? body : null;
@@ -97,7 +131,12 @@ export default defineTool({
         if (o?.items?.length) steps.push({ name: "안내", ok: true, items: [{ note: "용도지역·건폐율·용적률의 실제 수치는 해당 지자체 도시계획 조례가 정한다 — 연계 조례 조문을 source_get(ordinance) 으로 확인" }] });
       }
       const sources = [...new Set([...dom.sources, ...routeSources(domainLaws).filter((x) => dom.sources.includes(x))])].slice(0, 4);
-      await run("선례·해석", source_search, { source: sources, query: q50, size: 5 }, 5);
+      if (sc === "housing_subscription") {
+        await run("선례·해석", source_search, { source: sources, query: a.query.slice(0, 200), field: "body", size: 20 }, 5,
+          items => housingInterpretations(items, a.query, domainLaws));
+      } else {
+        await run("선례·해석", source_search, { source: sources, query: q50, size: 5 }, 5);
+      }
       if (sc === "tax_on_transfer") steps.push({ name: "안내", ok: true, items: [{ note: "세율·공제 등 기준 숫자는 airealty 세금 계산기 규칙표(tax_rules)로 확인 — 여기서는 근거 조문과 선례만 묶었습니다" }] });
       if (sc === "rent_dispute") steps.push({ name: "안내", ok: true, items: [{ note: "유리/불리 판단 없이 자료만 묶었습니다. 사실관계(계약일·전입·확정일자·통지일)가 다르면 결론도 다릅니다." }] });
     } else if (sc === "contract_check") {
@@ -106,7 +145,11 @@ export default defineTool({
       const findings = r?.items?.[0]?.findings || [];
       const basis = []; for (const f of findings) for (const b of f.basis || []) if (!basis.some((x) => x.law === b.law && x.label === b.label)) basis.push(b);
       for (const b of basis.slice(0, 3)) await run(`근거 ${b.law} ${b.label}`, article_get, { name: b.law, articles: [b.label], maxBytes: 12000, format: "text" }, 1);
-      if (findings[0]) await run("관련 판례", source_search, { source: "precedent", query: (findings[0].basis?.[0]?.title || a.query).slice(0, 40), size: 3 }, 3);
+      if (findings.length) {
+        const primary = basis.find(b => b.law && b.label);
+        const query = primary ? '"' + primary.law + " " + primary.label + '"' : q50;
+        await run("관련 판례", source_search, { source: "precedent", query, field: "body", size: 20 }, 3, distinctJudgments);
+      }
     } else if (sc === "version_at") {
       if (!a.date) throw invalid("version_at 은 date 필요");
       const cands = lawNames.length ? lawNames : (await run("후보 법령", statute_find, { query: q50, size: 3 }, 3))?.items?.map((x) => x.name) || [];

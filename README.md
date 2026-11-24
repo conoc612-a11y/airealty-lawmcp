@@ -66,9 +66,11 @@ AIRealty LawMCP는 **부동산 거래·건축·세금·투자·채권추심에 �
 **호스팅 서버**에 연결하려면 운영자에게 받은 토큰으로 다음 명령을 실행합니다. 꺾쇠괄호 부분을 해당 값으로 바꿉니다.
 
 ```bash
-claude mcp add --transport http airealty-law https://law.airealty.co.kr/mcp --header "Authorization: Bearer <발급받은 토큰>"
+claude mcp add --transport http airealty-law "https://bhgijvaxxjnocgfnaaeu.supabase.co/functions/v1/airealty-lawmcp/mcp?forceFunctionRegion=ap-northeast-2" --header "Authorization: Bearer <발급받은 토큰>"
 claude mcp list
 ```
+
+기본 원격 주소는 서울 리전에 직접 연결합니다. 기존에 연결한 서버 주소 `https://law.airealty.co.kr/mcp`도 계속 사용할 수 있습니다.
 
 **자기 PC에서 실행**하려면 Node.js 20 이상과 법제처 API 인증값(OC)을 준비합니다. 다음 명령의 경로를 실제 설치 위치로 바꿉니다. [법제처 공동활용 신청](https://open.law.go.kr)
 
@@ -108,6 +110,7 @@ npm run http             # 기본 주소 127.0.0.1:3457, MCP 경로 /mcp
 - **자체 HTTP 서버** — 토큰은 `node tools/token.js add <이름>`으로 발급하고 `list`와 `revoke <이름>`으로 관리합니다. `LAWMCP_TOKENS_FILE` 또는 `LAWMCP_TOKENS`로도 설정할 수 있습니다. 외부 인터페이스에 바인딩하려면 인증을 구성합니다. HTTPS는 앞단 프록시에서 처리합니다.
 - **호출 한도** — Node HTTP 서버의 토큰별 기본값은 초당 2회, 버스트 10회, 하루 2,000회입니다. `LAWMCP_TOKEN_RATE_PER_SEC`, `LAWMCP_TOKEN_BURST`, `LAWMCP_TOKEN_DAILY`로 바꿉니다. 한도에 도달하면 HTTP 429와 `Retry-After`를 반환합니다.
 - **상태와 성능** — `/healthz`에서 상태를 확인합니다. `LAWMCP_CACHE_DIR`로 법령 캐시 위치를 지정하고 `LAWMCP_PREWARM=0`으로 예열을 끌 수 있습니다. 실행 중인 서버에 대한 검증은 `npm run test:live`, 반복 측정은 `node tools/bench.js --out bench.json`으로 수행합니다.
+- **서울 인스턴스 간 조문·판결 공유 캐시** — Supabase에서 전용 캐시 테이블을 설치하고 서버 바인딩에 `LAWMCP_CACHE_TABLE=lawmcp_document_cache` 및 해당 프로젝트의 `SUPABASE_URL`, 서버 전용 `SUPABASE_SERVICE_ROLE_KEY`를 제공합니다. 서울 함수가 Worker의 `fetch(request, env)`를 호출할 때 이 세 값을 `env`에 넘기면 인스턴스 재시작 후에도 유효한 법령 판 목록·조문·판결을 읽습니다. 인증된 `/healthz`의 `documentCache`에서 공유 적중·저장·오류 횟수를 확인할 수 있습니다. 조문 묶음은 적용 판과 조문 단위를 함께 저장하며, 별표·목차는 필요한 부분만 따로 저장합니다. 검색 목록은 질의와 필터를 해시로 구분하고 제공기관이 반환한 공개 결과 필드만 저장합니다. 기존 테이블에도 같은 SQL을 다시 실행하면 데이터 보존 상태에서 조문·판 목록·이전 형식 페이지를 한 번에 확인하는 읽기 함수가 추가됩니다. 메모리 적중은 공유 저장소를 호출하지 않습니다. 공유 저장소가 응답하지 않으면 법제처 조회를 계속합니다.
 
 제품 범위와 기능별 검수 기준은 PRD에 정리했습니다. [PRD 읽기](PRD.md)
 

@@ -1,7 +1,8 @@
 // DRF 응답을 캐시와 함께 쓰는 얇은 래퍼. 응답의 흔들림(배열/단일객체/없음)을 여기서 흡수한다.
 import { call, requestKey } from "./drf.js";
 import { cache, TTL } from "./cache.js";
-import { fmtDate } from "./kst.js";
+import { documentKind, isDocument } from "./document_store.js";
+import { fmtDate, msUntilKstMidnight } from "./kst.js";
 
 /** 값이 배열이면 그대로, 객체면 [객체], 없으면 []. */
 export const asList = (v) => (Array.isArray(v) ? v : v == null || v === "" ? [] : [v]);
@@ -22,34 +23,69 @@ export function unwrapList(data, rowKeys) {
   return { rows, total: total ?? (rows.length ? rows.length : 0), page: toInt(root.page) || 1 };
 }
 
-/** 캐시 거쳐 호출. meta.cache 를 호출자가 알 수 있게 {data, hit, stale?} 로 — 업스트림 실패 시 만료 캐시로 답하면 stale. */
-export async function cached(path, params, ttl, opts = {}) {
+let documentStore;
+const pendingDocuments = new Map();
+export function getDocumentStore() { return documentStore; }
+export function setDocumentStore(store) { documentStore = store; }
+
+/** 메모리 → 공유 문서 → 제공기관. 읽은 문서는 남은 유효시간만 메모리에 올린다. */
+async function readDocument(path, params, ttl, opts = {}) {
   const key = "drf:" + requestKey(path, params);
   const hit = cache.get(key);
-  if (hit !== undefined) return { data: hit, hit: true };
-  try {
-    const data = await call(path, params, opts);
-    const now = Date.now();
-    const remaining = opts.validUntil == null ? ttl : Math.min(ttl, opts.validUntil - now);
-    cache.set(key, data, remaining, now);
-    return { data, hit: false };
-  } catch (e) {
-    // 오프라인 폴백 — 업스트림 실패 시 48시간 이내 만료 캐시를 스타일 응답(초과·없으면 원래 오류)
-    const stale = cache.getStale(key);
-    if (stale !== undefined) return { data: stale.value, hit: false, stale: true };
-    throw e;
+  if (hit !== undefined) return { data: hit, hit: true, expiresAt: cache.expiresAt(key) };
+  const started = Date.now();
+  let deadline = opts.validUntil ?? Infinity;
+  if (path === "lawService.do" && params.target === "eflaw" && params.ID && !params.MST) {
+    deadline = Math.min(deadline, started + Math.min(TTL.resolve, msUntilKstMidnight(started)));
   }
+  const kind = documentStore && documentKind(path, params);
+  const load = async () => {
+    if (kind) {
+      const entry = await documentStore.get(key);
+      const now = Date.now();
+      const expires = Math.min(deadline, entry?.expiresAt ?? 0);
+      if (expires > now && isDocument(kind, entry.data)) {
+        cache.set(key, entry.data, expires - now, now);
+        return { data: entry.data, hit: true, expiresAt: expires };
+      }
+    }
+    try {
+      const data = await call(path, params, opts);
+      const now = Date.now();
+      const expires = Math.min(deadline, now + ttl);
+      if (expires > now) {
+        cache.set(key, data, expires - now, now);
+        if (kind && !opts.readOnlyStore && isDocument(kind, data)) await documentStore.put(key, data, started, expires);
+      }
+      return { data, hit: false, expiresAt: expires };
+    } catch (e) {
+      const stale = cache.getStale(key);
+      if (stale !== undefined) return { data: stale.value, hit: false, stale: true, expiresAt: 0 };
+      throw e;
+    }
+  };
+  // 백그라운드 예열 중에도 전경 호출은 DRF의 승격 로직에 도달해야 한다.
+  if (!kind || opts.background) return load();
+  if (!pendingDocuments.has(key)) {
+    pendingDocuments.set(key, load().finally(() => pendingDocuments.delete(key)));
+  }
+  return pendingDocuments.get(key);
+}
+
+export async function cached(path, params, ttl, opts) {
+  const { expiresAt, ...result } = await readDocument(path, params, ttl, opts);
+  return result;
 }
 
 /** lawSearch.do 목록. */
-export async function search(target, params, { ttl = TTL.list, rowKeys, long, validUntil } = {}) {
-  const { data, hit, stale } = await cached("lawSearch.do", { target, ...params }, ttl, { long, validUntil });
-  return { ...unwrapList(data, rowKeys), hit, stale: !!stale, raw: data };
+export async function search(target, params, { ttl = TTL.list, rowKeys, long, validUntil, readOnlyStore } = {}) {
+  const { data, hit, stale, expiresAt } = await readDocument("lawSearch.do", { target, ...params }, ttl, { long, validUntil, readOnlyStore });
+  return { ...unwrapList(data, rowKeys), hit, stale: !!stale, expiresAt, raw: data };
 }
 
 /** lawService.do 본문. */
 export async function service(target, params, { ttl = TTL.body, long } = {}) {
-  return cached("lawService.do", { target, ...params }, ttl, { long });
+  return readDocument("lawService.do", { target, ...params }, ttl, { long });
 }
 
 /** 목록 행의 공통 법령 메타 정리. */
