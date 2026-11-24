@@ -12,7 +12,7 @@ import { getTool } from "../src/registry.js";
 import { _test as drf } from "../src/drf.js";
 import { msUntilKstMidnight } from "../src/kst.js";
 
-import { listVersions } from "../src/versions.js";
+import { listVersions, selectVersion } from "../src/versions.js";
 
 import { requestKey } from "../src/drf.js";
 
@@ -134,4 +134,47 @@ test("기존 원본 페이지 두 개를 한 목록으로 읽고 동시 호출�
   assert.equal(shared.expiresAt, expiresAt);
   assert.deepEqual(reads, [key]);
   assert.deepEqual(upstream, []);
+});
+
+test("날짜 판 조회는 예정 판을 보존하고 짧은 목록을 전체 연혁으로 저장하지 않는다", async t => {
+  const { rows } = environment(t);
+  const pages = [];
+  const date = "20260101";
+  const make = (day, i) => ({ 법령ID: "000123", 법령일련번호: String(800 + i), 법령명한글: "시험법",
+    시행일자: day, 현행연혁코드: day === date ? "현행" : day > date ? "시행예정" : "연혁" });
+  const history = ["20280101", "20270101", date, date, ...Array(11).fill("20200101")].map(make);
+  t.mock.method(globalThis, "fetch", async input => {
+    const size = Number(new URL(input).searchParams.get("display")); pages.push(size);
+    return Response.json({ LawSearch: { totalCnt: history.length, law: history.slice(0, size) } });
+  });
+  const recent = await listVersions("000123", date);
+  assert.deepEqual(pages, [12]);
+  const selected = selectVersion(recent.versions, date);
+  assert.equal(selected.upcoming.length, 2);
+  assert.equal(rows.has("version-list:v1:000123"), false);
+  cache.clear();
+  assert.deepEqual(selectVersion((await listVersions("000123", date)).versions, date), selected);
+  assert.deepEqual(pages, [12]);
+  const full = await listVersions("000123");
+  assert.deepEqual(pages, [12, 100]);
+  assert.equal(full.versions.length, history.length);
+  assert.deepEqual(selectVersion(full.versions, date), selected);
+});
+
+test("적용일이 최근 목록 끝에 걸리면 다음 행의 같은 날짜 현행 판까지 확인한다", async t => {
+  environment(t);
+  const date = "20260101", pages = [];
+  const history = Array.from({ length: 14 }, (_, i) => ({
+    법령일련번호: String(100 + i), 법령ID: "000123", 법령명한글: "시험법",
+    시행일자: i < 11 ? "20270101" : i < 13 ? date : "20200101",
+    현행연혁코드: i < 11 ? "시행예정" : i === 12 ? "현행" : "연혁",
+  }));
+  t.mock.method(globalThis, "fetch", async input => {
+    const size = Number(new URL(input).searchParams.get("display")); pages.push(size);
+    return Response.json({ LawSearch: { totalCnt: history.length, law: history.slice(0, size) } });
+  });
+  const [one, two] = await Promise.all([listVersions("000123", date), listVersions("000123", date)]);
+  assert.deepEqual(pages, [12, 100]); assert.deepEqual(one.versions, two.versions);
+  const selected = selectVersion(one.versions, date);
+  assert.equal(selected.chosen.mst, "112"); assert.equal(selected.upcoming.length, 11);
 });

@@ -24,7 +24,7 @@ export function startStdio({ input = process.stdin, output = process.stdout } = 
           const want = m.params?.protocolVersion;
           reply(id, { protocolVersion: SUPPORTED.includes(want) ? want : SUPPORTED[0], capabilities: { tools: {} }, serverInfo: SERVER_INFO });
           // 응답 뒤 백그라운드: 레지스트리 로드 → 색인·체계도 예열(LAWMCP_PREWARM=0 이면 안 함). initialize 전엔 네트워크 없음(§7.1)
-          setTimeout(() => registry().then(() => import("./dictionary.js")).then((d) => d.ensureDictionary()).then(() => import("./prewarm.js")).then((m) => m.startPrewarm()).catch(() => {}), 0);
+          setTimeout(() => registry().then(() => import("./prewarm.js")).then((m) => m.startPrewarm()).catch(() => {}), 0);
         } else if (m.method === "notifications/initialized" || (typeof m.method === "string" && m.method.startsWith("notifications/"))) {
           // 알림: 응답 없음
         } else if (m.method === "ping") reply(id, {});

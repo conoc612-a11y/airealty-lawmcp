@@ -18,7 +18,7 @@ function item(l, matchType) {
 
 async function withUpcoming(it, D) {
   try {
-    const vl = await listVersions(it.lawId);
+    const vl = await listVersions(it.lawId, D);
     const sel = selectVersion(vl.versions, D);
     it.upcoming = sel.upcoming.map((u) => ({ mst: u.mst, effectiveDate: u.effectiveDate }));
     if (!it.mst || it.status === "current") { it.mst = sel.chosen.mst; it.effectiveDate = sel.chosen.effectiveDate; it.promulgationDate = sel.chosen.promulgationDate; it.promulgationNo = sel.chosen.promulgationNo; }
@@ -75,11 +75,10 @@ export default defineTool({
     if ((a.promulgatedFrom && !pf) || (a.promulgatedTo && !pt)) throw invalid("기간 날짜 형식 오류");
     if (pf || pt) params.ancYd = `${pf || "19000101"}~${pt || "29991231"}`;
     const terms = q.split(/\s+/).filter(Boolean);
-    // 사전에 정확 일치가 있으면 시행예정 판 조회(판 목록)를 검색과 동시에 시작한다(왕복 직렬화 방지)
-    await ensureDictionary();
+    // 이미 읽은 사전으로만 판 목록을 미리 받는다. 첫 검색은 공식 검색 결과의 ID로 판을 확인한다.
     if (a.scope === "current") {
       const exactEntry = exactDictionaryEntry(q);
-      if (exactEntry) listVersions(exactEntry.i).catch(() => {});
+      if (exactEntry) listVersions(exactEntry.i, D).catch(() => {});
     }
     const r = await publicSearchRows("statute", "eflaw", params, ["law"], lawRow);
     let rows = r.items.slice();

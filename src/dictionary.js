@@ -51,11 +51,11 @@ function writeDisk(d) {
   try { mkdirSync(DIR, { recursive: true }); writeFileSync(FILE, text); } catch {}
 }
 
-const DICT_PAGE = (page) => search("eflaw", { nw: 3, display: 100, page, sort: "lasc" }, { ttl: 60_000, rowKeys: ["law"] });
+const DICT_PAGE = (page, background = false) => search("eflaw", { nw: 3, display: 100, page, sort: "lasc" }, { ttl: 60_000, rowKeys: ["law"], background });
 function toEntries(rows) { const out = []; for (const row of rows) { const l = lawRow(row); if (l.name && l.lawId) out.push({ n: l.name, k: l.kind, i: l.lawId, m: l.mst, e: l.effectiveDate, d: l.department || undefined, a: l.abbreviation || undefined }); } return out; }
-async function fetchAbbreviations() {
+async function fetchAbbreviations(background = false) {
   try {
-    const a = await search("lsAbrv", {}, { ttl: 60_000, rowKeys: ["law"], long: true });
+    const a = await search("lsAbrv", {}, { ttl: 60_000, rowKeys: ["law"], long: true, background });
     return a.rows.map((r) => ({ abbr: str(r["법령약칭명"]), name: str(r["법령명한글"]), lawId: str(r["법령ID"]), current: str(r["현행연혁코드"]) === "현행" })).filter((x) => x.abbr && x.name);
   } catch { return []; }
 }
@@ -71,11 +71,11 @@ function finish(entries, total, abbreviations) {
 async function fetchAll() {
   const entries = []; let total = null;
   for (let page = 1; page <= 200; page++) {
-    const r = await DICT_PAGE(page);
+    const r = await DICT_PAGE(page, true);
     total = r.total; entries.push(...toEntries(r.rows));
     if (!r.rows.length || entries.length >= total) break;
   }
-  return finish(entries, total, await fetchAbbreviations());
+  return finish(entries, total, await fetchAbbreviations(true));
 }
 
 /** 사전 보장: 디스크가 신선하면 그대로, 아니면 업스트림(실패 시 옛 사전 유지). 처음 호출 전엔 네트워크 없음. */

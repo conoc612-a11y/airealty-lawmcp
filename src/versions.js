@@ -12,19 +12,25 @@ import { cacheDir, readDisk, writeDisk } from "./diskcache.js";
 // 이름 검색의 선행 조회와 후속 보강이 같은 목록을 기다리도록 한다.
 const pendingVersionLists = new Map();
 const versionListKey = lawId => "version-list:v1:" + lawId;
-const pageParams = (lawId, page) => ({ LID: lawId, nw: "1,2,3", display: 100, page, sort: "efdes" });
-export function versionDocumentKeys(lawId) {
-  const firstPage = "drf:" + requestKey("lawSearch.do", { target: "eflaw", ...pageParams(lawId, 1) });
+const RECENT_PAGE_SIZE = 12;
+const pageParams = (lawId, page, display = 100) => ({ LID: lawId, nw: "1,2,3", display, page, sort: "efdes" });
+export function versionDocumentKeys(lawId, display = 100) {
+  const firstPage = "drf:" + requestKey("lawSearch.do", { target: "eflaw", ...pageParams(lawId, 1, display) });
   return [versionListKey(lawId), firstPage];
 }
 
-/** 법령ID → 판 목록(시행일 내림차순). 각 {mst, efYd, effectiveDate, promulgationDate, promulgationNo, revision, statusCode}. */
-export async function listVersions(lawId) {
+/** 시행일 내림차순 판 목록. selectionDate를 지정하면 해당 날짜의 적용 판과 예정 판을 선택하는 데 충분한 범위만 돌려줄 수 있다. */
+export async function listVersions(lawId, selectionDate) {
   const now = Date.now();
   const key = `versions:${lawId}`;
   const directory = cacheDir();
   const warm = cache.get(key, now);
   if (warm?.directory === directory) return { ...warm.value, hit: true, expiresAt: cache.expiresAt(key) };
+  if (selectionDate) {
+    const recentKey = key + ":" + selectionDate;
+    const recent = cache.get(recentKey, now);
+    if (recent?.directory === directory) return { ...recent.value, hit: true, expiresAt: cache.expiresAt(recentKey) };
+  }
   const dk = readDisk("versions", lawId, now);
   const ttl = Math.min(TTL.resolve, msUntilKstMidnight(now));
   if (dk && dk.ageMs < TTL.resolve && todayKst(dk.savedAt) === todayKst(now) && Array.isArray(dk.value?.versions) && dk.value.versions.length) {
@@ -32,16 +38,16 @@ export async function listVersions(lawId) {
     return { ...dk.value, hit: true, expiresAt: cache.expiresAt(key) };
   }
   const store = getDocumentStore();
-  if (!store) return fetchVersions(lawId, key, directory, now, ttl);
-  const pendingKey = JSON.stringify([directory, lawId]);
+  const pendingKey = JSON.stringify([directory, lawId, selectionDate]);
   if (!pendingVersionLists.has(pendingKey)) {
-    const load = readVersionList(store, lawId, key, directory, now, ttl);
+    const load = store ? readVersionList(store, lawId, key, directory, now, ttl, selectionDate)
+      : fetchVersions(lawId, key, directory, now, ttl, selectionDate);
     pendingVersionLists.set(pendingKey, load.finally(() => pendingVersionLists.delete(pendingKey)));
   }
   return pendingVersionLists.get(pendingKey);
 }
-async function readVersionList(store, lawId, key, directory, started, ttl) {
-  const [sharedKey, firstPageKey] = versionDocumentKeys(lawId);
+async function readVersionList(store, lawId, key, directory, started, ttl, selectionDate) {
+  const [sharedKey, firstPageKey] = versionDocumentKeys(lawId, selectionDate ? RECENT_PAGE_SIZE : 100);
   const row = await store.get(sharedKey, firstPageKey);
   const expiresAt = Math.min(row?.expiresAt ?? 0, started + ttl);
   const now = Date.now();
@@ -49,20 +55,35 @@ async function readVersionList(store, lawId, key, directory, started, ttl) {
     cache.set(key, { directory, value: row.data }, expiresAt - now, now);
     return { ...row.data, hit: true, stale: false, expiresAt };
   }
-  const result = await fetchVersions(lawId, key, directory, started, ttl, true);
-  if (!result.stale && result.versions.length && result.expiresAt > Date.now()) {
+  const result = await fetchVersions(lawId, key, directory, started, ttl, selectionDate, true);
+  if (!selectionDate && !result.stale && result.versions.length && result.expiresAt > Date.now()) {
     const { versions, name, kind } = result;
     await store.put(sharedKey, { versions, name, kind }, started, result.expiresAt);
   }
   return result;
 }
 
-async function fetchVersions(lawId, key, directory, started, ttl, readOnlyStore = false) {
+// 내림차순 첫 쪽에 적용일보다 오래된 판이 있어야 같은 날의 다른 판까지 포함했다고 보장할 수 있다.
+function coversDate(page, date) {
+  const total = String(page.raw?.LawSearch?.totalCnt ?? "");
+  const dates = page.rows.map(row => digits(row["시행일자"]));
+  if (!/^\d+$/.test(total) || !dates.length || Number(total) < dates.length ||
+      dates.some((d, i) => !/^\d{8}$/.test(d) || (i > 0 && d > dates[i - 1]))) return false;
+  if (Number(total) === dates.length) return true;
+  const applicable = dates.find(d => d <= date);
+  return dates.length === RECENT_PAGE_SIZE && !!applicable && dates.at(-1) < applicable;
+}
+
+async function fetchVersions(lawId, key, directory, started, ttl, selectionDate, readOnlyStore = false) {
   const rows = []; let hit = true; let stale = false; let name = "", kind = "";
-  const fetchPage = (page) => search("eflaw", pageParams(lawId, page), { rowKeys: ["law"], ttl, validUntil: started + ttl, readOnlyStore });
-  const first = await fetchPage(1);
+  const size = selectionDate ? RECENT_PAGE_SIZE : 100;
+  const fetchPage = page => search("eflaw", pageParams(lawId, page, size), {
+    rowKeys: ["law"], ttl, validUntil: started + ttl, readOnlyStore: readOnlyStore && !selectionDate,
+  });
+  const first = selectionDate ? await fetchPage(1).catch(() => null) : await fetchPage(1);
+  if (selectionDate && (!first || !coversDate(first, selectionDate))) return listVersions(lawId);
   const pages = [first];
-  const need = Math.min(5, Math.ceil((first.total || 0) / 100));
+  const need = selectionDate ? 1 : Math.min(5, Math.ceil((first.total || 0) / 100));
   if (need > 1) pages.push(...(await Promise.all(Array.from({ length: need - 1 }, (_, i) => fetchPage(i + 2))))); // 나머지 페이지는 병렬
   for (const r of pages) {
     hit = hit && r.hit;
@@ -79,9 +100,9 @@ async function fetchVersions(lawId, key, directory, started, ttl, readOnlyStore 
   const expiresAt = Math.min(started + ttl, ...pages.map(page => page.expiresAt));
   if (out.length && !stale && expiresAt > Date.now() && cacheDir() === directory) {
     const value = { versions: out, name, kind };
-    if (pages.every(page => !page.hit)) writeDisk("versions", lawId, value, started);
+    if (!selectionDate && pages.every(page => !page.hit)) writeDisk("versions", lawId, value, started);
     // 가공한 목록도 가장 먼저 만료되는 원본 페이지까지만 재사용한다.
-    cache.set(key, { directory, value }, expiresAt - started, started);
+    cache.set(selectionDate ? key + ":" + selectionDate : key, { directory, value }, expiresAt - started, started);
   }
   return { versions: out, name, kind, hit, stale, expiresAt };
 }

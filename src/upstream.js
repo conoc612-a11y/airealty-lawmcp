@@ -78,8 +78,8 @@ export async function cached(path, params, ttl, opts) {
 }
 
 /** lawSearch.do 목록. */
-export async function search(target, params, { ttl = TTL.list, rowKeys, long, validUntil, readOnlyStore } = {}) {
-  const { data, hit, stale, expiresAt } = await readDocument("lawSearch.do", { target, ...params }, ttl, { long, validUntil, readOnlyStore });
+export async function search(target, params, { ttl = TTL.list, rowKeys, long, validUntil, readOnlyStore, background } = {}) {
+  const { data, hit, stale, expiresAt } = await readDocument("lawSearch.do", { target, ...params }, ttl, { long, validUntil, readOnlyStore, background });
   return { ...unwrapList(data, rowKeys), hit, stale: !!stale, expiresAt, raw: data };
 }
 

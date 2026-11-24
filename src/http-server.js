@@ -10,7 +10,6 @@ import { breakerState, stats } from "./drf.js";
 import { keyInfo } from "./keys.js";
 import { TOOL_LIST_BYTES } from "./registry.js";
 import { startPrewarm, prewarmState } from "./prewarm.js";
-import { ensureDictionary } from "./dictionary.js";
 import { createTokenStore, authenticate, createLimiter } from "./auth.js";
 
 const MAX_BODY = 1024 * 1024;
@@ -87,7 +86,7 @@ export function startHttp({ port = Number(process.env.LAWMCP_PORT || process.env
   const server = createHttpServer();
   const mustAuth = !LOOPBACK_HOST.test(host) || process.env.LAWMCP_REQUIRE_AUTH === "1" || !!(process.env.LAWMCP_TOKENS || process.env.LAWMCP_TOKENS_FILE);
   if (mustAuth && !server.authRequired) { console.error(`airealty-lawmcp: 유효한 토큰이 0개 — LAWMCP_TOKENS_FILE 또는 LAWMCP_TOKENS 에 토큰을 넣어라(node tools/token.js add <name>)`); process.exit(2); }
-  server.listen(port, host, () => { const k = keyInfo(); console.error(`airealty-lawmcp http listening ${host}:${port} · auth ${server.authRequired ? "bearer" : "off"} · tools/list ${TOOL_LIST_BYTES}B · key ${k.name} len ${k.length}`); ensureDictionary().catch(() => {}); startPrewarm().catch(() => {}); });
+  server.listen(port, host, () => { const k = keyInfo(); console.error(`airealty-lawmcp http listening ${host}:${port} · auth ${server.authRequired ? "bearer" : "off"} · tools/list ${TOOL_LIST_BYTES}B · key ${k.name} len ${k.length}`); startPrewarm().catch(() => {}); });
   const shutdown = () => {
     server.close(() => process.exit(0));
     const t0 = Date.now();

@@ -51,21 +51,28 @@ export function mergeCache(states) {
  */
 export function paginateByBytes(items, { maxBytes, part = 1, splitUnit, overheadBytes = 1500 }) {
   const budget = Math.max(2000, maxBytes - overheadBytes);
-  const units = [];
-  for (const it of items) {
-    if (bytesOf(it) <= budget || !splitUnit) { units.push(it); continue; }
-    units.push(...splitUnit(it, budget));
+  const parts = [[]];
+  const notes = new Set();
+  let page = parts[0], used = 0;
+  function append(unit, bytes) {
+    if (page.length && used + bytes + 1 > budget) {
+      page = [];
+      parts.push(page);
+      used = 0;
+    }
+    page.push(unit);
+    used += bytes + 1;
+    if (unit?.note) notes.add(unit.note);
   }
-  const parts = []; let cur = []; let curBytes = 0;
-  for (const u of units) {
-    const b = bytesOf(u) + 1;
-    if (cur.length && curBytes + b > budget) { parts.push(cur); cur = []; curBytes = 0; }
-    cur.push(u); curBytes += b;
+  for (const item of items) {
+    const size = bytesOf(item);
+    if (size > budget && splitUnit) {
+      for (const piece of splitUnit(item, budget)) append(piece, bytesOf(piece));
+    } else {
+      append(item, size);
+    }
   }
-  if (cur.length || !parts.length) parts.push(cur);
   const p = Math.min(Math.max(1, part), parts.length);
-  const warnings = [];
-  const splitNotes = [...new Set(units.map((u) => u && u.note).filter(Boolean))];
-  if (splitNotes.length) warnings.push(...splitNotes.map((n) => `${n}(응답 예산 ${maxBytes}B)`));
+  const warnings = [...notes].map(note => `${note}(응답 예산 ${maxBytes}B)`);
   return { items: parts[p - 1], part: p, parts: parts.length, hasMore: p < parts.length, warnings };
 }

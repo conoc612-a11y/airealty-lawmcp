@@ -23,7 +23,7 @@ export default defineTool({
     action: z.enum(["list", "describe", "call"]),
     query: z.string().max(100).optional().describe("list 용 키워드"),
     name: z.string().max(40).optional().describe("describe/call 대상 도구 이름"),
-    args: z.record(z.any()).optional().describe("call 인자"),
+    args: z.record(z.string(), z.any()).optional().describe("call 인자"),
   },
   async handler(a) {
     if (a.action === "list") {

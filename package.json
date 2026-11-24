@@ -1,6 +1,6 @@
 {
   "name": "airealty-lawmcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "법제처 국가법령정보 Open API(DRF) 기반 airealty 법령 MCP 서버",
@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.25.0"
+    "zod": "^4.6.7"
   },
   "license": "MIT",
   "repository": {
