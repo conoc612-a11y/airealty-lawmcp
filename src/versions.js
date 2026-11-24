@@ -20,7 +20,7 @@ export function versionDocumentKeys(lawId, display = 100) {
 }
 
 /** 시행일 내림차순 판 목록. selectionDate를 지정하면 해당 날짜의 적용 판과 예정 판을 선택하는 데 충분한 범위만 돌려줄 수 있다. */
-export async function listVersions(lawId, selectionDate) {
+export async function listVersions(lawId, selectionDate, pageSize = RECENT_PAGE_SIZE) {
   const now = Date.now();
   const key = `versions:${lawId}`;
   const directory = cacheDir();
@@ -38,16 +38,17 @@ export async function listVersions(lawId, selectionDate) {
     return { ...dk.value, hit: true, expiresAt: cache.expiresAt(key) };
   }
   const store = getDocumentStore();
-  const pendingKey = JSON.stringify([directory, lawId, selectionDate]);
+  const size = selectionDate ? pageSize : 100;
+  const pendingKey = JSON.stringify([directory, lawId, selectionDate, size]);
   if (!pendingVersionLists.has(pendingKey)) {
-    const load = store ? readVersionList(store, lawId, key, directory, now, ttl, selectionDate)
-      : fetchVersions(lawId, key, directory, now, ttl, selectionDate);
+    const load = store ? readVersionList(store, lawId, key, directory, now, ttl, selectionDate, size)
+      : fetchVersions(lawId, key, directory, now, ttl, selectionDate, size);
     pendingVersionLists.set(pendingKey, load.finally(() => pendingVersionLists.delete(pendingKey)));
   }
   return pendingVersionLists.get(pendingKey);
 }
-async function readVersionList(store, lawId, key, directory, started, ttl, selectionDate) {
-  const [sharedKey, firstPageKey] = versionDocumentKeys(lawId, selectionDate ? RECENT_PAGE_SIZE : 100);
+async function readVersionList(store, lawId, key, directory, started, ttl, selectionDate, size) {
+  const [sharedKey, firstPageKey] = versionDocumentKeys(lawId, size);
   const row = await store.get(sharedKey, firstPageKey);
   const expiresAt = Math.min(row?.expiresAt ?? 0, started + ttl);
   const now = Date.now();
@@ -55,7 +56,7 @@ async function readVersionList(store, lawId, key, directory, started, ttl, selec
     cache.set(key, { directory, value: row.data }, expiresAt - now, now);
     return { ...row.data, hit: true, stale: false, expiresAt };
   }
-  const result = await fetchVersions(lawId, key, directory, started, ttl, selectionDate, true);
+  const result = await fetchVersions(lawId, key, directory, started, ttl, selectionDate, size, true);
   if (!selectionDate && !result.stale && result.versions.length && result.expiresAt > Date.now()) {
     const { versions, name, kind } = result;
     await store.put(sharedKey, { versions, name, kind }, started, result.expiresAt);
@@ -64,24 +65,23 @@ async function readVersionList(store, lawId, key, directory, started, ttl, selec
 }
 
 // 내림차순 첫 쪽에 적용일보다 오래된 판이 있어야 같은 날의 다른 판까지 포함했다고 보장할 수 있다.
-function coversDate(page, date) {
+function coversDate(page, date, size) {
   const total = String(page.raw?.LawSearch?.totalCnt ?? "");
   const dates = page.rows.map(row => digits(row["시행일자"]));
   if (!/^\d+$/.test(total) || !dates.length || Number(total) < dates.length ||
       dates.some((d, i) => !/^\d{8}$/.test(d) || (i > 0 && d > dates[i - 1]))) return false;
   if (Number(total) === dates.length) return true;
   const applicable = dates.find(d => d <= date);
-  return dates.length === RECENT_PAGE_SIZE && !!applicable && dates.at(-1) < applicable;
+  return dates.length === size && !!applicable && dates.at(-1) < applicable;
 }
 
-async function fetchVersions(lawId, key, directory, started, ttl, selectionDate, readOnlyStore = false) {
+async function fetchVersions(lawId, key, directory, started, ttl, selectionDate, size, readOnlyStore = false) {
   const rows = []; let hit = true; let stale = false; let name = "", kind = "";
-  const size = selectionDate ? RECENT_PAGE_SIZE : 100;
   const fetchPage = page => search("eflaw", pageParams(lawId, page, size), {
     rowKeys: ["law"], ttl, validUntil: started + ttl, readOnlyStore: readOnlyStore && !selectionDate,
   });
   const first = selectionDate ? await fetchPage(1).catch(() => null) : await fetchPage(1);
-  if (selectionDate && (!first || !coversDate(first, selectionDate))) return listVersions(lawId);
+  if (selectionDate && (!first || !coversDate(first, selectionDate, size))) return listVersions(lawId);
   const pages = [first];
   const need = selectionDate ? 1 : Math.min(5, Math.ceil((first.total || 0) / 100));
   if (need > 1) pages.push(...(await Promise.all(Array.from({ length: need - 1 }, (_, i) => fetchPage(i + 2))))); // 나머지 페이지는 병렬
@@ -128,7 +128,7 @@ export const statusOf = (v, D) => (v.efYd > D ? "upcoming" : v.statusCode === "�
  * 법령 지정(spec: {name|lawId|mst}) + 기준일 → {law:{...}, chosen, upcoming, versions, cache}.
  * mst 만 주면 lawId 를 알기 위해 본문 기본정보를 1회 받는다(캐시됨).
  */
-export async function resolveLaw(spec, asOfYmd) {
+export async function resolveLaw(spec, asOfYmd, { selectionOnly = false } = {}) {
   const D = asOfYmd || todayKst();
   let expiresAt = Infinity;
   let lawId = spec.lawId, resolved = null; const cacheStates = [];
@@ -141,7 +141,9 @@ export async function resolveLaw(spec, asOfYmd) {
     lawId = str(data?.["법령"]?.["기본정보"]?.["법령ID"]);
     if (!lawId) throw new LawError("LAW_NOT_FOUND", `MST ${spec.mst} 에 해당하는 법령 없음`, { retryable: false });
   }
-  const vl = await listVersions(lawId);
+  // 조문은 검색 때 확인한 기준일 판을 재사용한다. 없으면 원래 연혁 첫 쪽으로
+  // 적용 판과 모든 예정 판을 확인하고, 경계가 불확실할 때만 나머지를 읽는다.
+  const vl = await listVersions(lawId, selectionOnly && !spec.mst ? D : undefined, 100);
   cacheStates.push(cacheState(vl));
   if (!vl.versions.length) throw new LawError("LAW_NOT_FOUND", `법령ID ${lawId} 의 판 목록 없음`, { retryable: false });
   // 모순 검사: name 과 lawId/mst 가 같이 왔는데 다른 법령이면 INVALID_INPUT

@@ -22,21 +22,25 @@ export async function writePrepared(key, value, started, expiresAt) {
 }
 
 
+export function publicSearchKey(kind, target, params) {
+  const hash = createHash("sha256").update(requestKey(target, params)).digest("hex");
+  return "public-list:v1:" + kind + ":" + hash;
+}
+
 /** 공유 목록에는 공개 필드만 넣고, 검색문과 필터는 해시로만 식별한다. */
 export async function publicSearchRows(kind, target, params, rowKeys, formatRow) {
   const store = getDocumentStore();
   const started = Date.now();
   let key;
   if (store) {
-    const hash = createHash("sha256").update(requestKey(target, params)).digest("hex");
-    key = "public-list:v1:" + kind + ":" + hash;
+    key = publicSearchKey(kind, target, params);
     const saved = await readPrepared(key, value => Array.isArray(value?.items) && Number.isInteger(value.total));
-    if (saved) return { items: structuredClone(saved.items), total: saved.total, hit: true, stale: false };
+    if (saved) return { items: structuredClone(saved.items), total: saved.total, hit: true, stale: false, expiresAt: cache.expiresAt(key) };
   }
   const result = await search(target, params, { rowKeys });
   const items = result.rows.map(formatRow);
   if (store && items.length && !result.stale) {
     await writePrepared(key, { items: structuredClone(items), total: result.total }, started, result.expiresAt);
   }
-  return { items, total: result.total, hit: result.hit, stale: result.stale };
+  return { items, total: result.total, hit: result.hit, stale: result.stale, expiresAt: result.expiresAt };
 }

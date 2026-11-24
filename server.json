@@ -3,7 +3,7 @@
   "name": "kr.co.airealty/lawmcp",
   "title": "airealty 한국 법령 (법제처 OPEN API)",
   "description": "대한민국 법령·조문·별표·연혁·판례·해석례를 법제처 국가법령정보 OPEN API 로 찾아보는 읽기 전용 MCP 서버. 핵심 도구 12개.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "websiteUrl": "https://airealty.co.kr",
   "repository": { "url": "https://github.com/conoc612-a11y/airealty-lawmcp", "source": "github" },
   "remotes": [

@@ -1,14 +1,14 @@
 // statute_find — 법령 찾기(이름·키워드·자동완성·일괄·기간 필터) (SPEC §4.1).
-import { publicSearchRows } from "../prepared_documents.js";
+import { publicSearchKey, publicSearchRows, readPrepared, writePrepared } from "../prepared_documents.js";
 import { defineTool, ok, z, S, asOfYmd } from "../tool.js";
 import { fromDictionary, resolveLawName, sortCandidates, matchTypeOf } from "../resolver.js";
 import { ensureDictionary, exactDictionaryEntry, normalizeName } from "../dictionary.js";
-import { search, lawRow } from "../upstream.js";
+import { getDocumentStore, search, lawRow } from "../upstream.js";
 import { listVersions, selectVersion } from "../versions.js";
 import { lawLink } from "../links.js";
 import { parseDate } from "../kst.js";
 import { invalid, isLawError } from "../errors.js";
-import { mergeCache, cacheState as cacheStateOf } from "../envelope.js";
+import { cacheState as cacheStateOf } from "../envelope.js";
 
 const KINDS_ORDER = ["법률", "대통령령", "총리령", "부령", "규칙"];
 
@@ -22,8 +22,8 @@ async function withUpcoming(it, D) {
     const sel = selectVersion(vl.versions, D);
     it.upcoming = sel.upcoming.map((u) => ({ mst: u.mst, effectiveDate: u.effectiveDate }));
     if (!it.mst || it.status === "current") { it.mst = sel.chosen.mst; it.effectiveDate = sel.chosen.effectiveDate; it.promulgationDate = sel.chosen.promulgationDate; it.promulgationNo = sel.chosen.promulgationNo; }
-  } catch { /* 보충 실패는 조용히 — 목록 자체는 유효 */ }
-  return it;
+    return vl.stale ? 0 : vl.expiresAt;
+  } catch { return 0; } // 판 정보 보충 실패 시 목록은 반환하되 합친 결과는 저장하지 않는다.
 }
 
 export default defineTool({
@@ -75,6 +75,19 @@ export default defineTool({
     if ((a.promulgatedFrom && !pf) || (a.promulgatedTo && !pt)) throw invalid("기간 날짜 형식 오류");
     if (pf || pt) params.ancYd = `${pf || "19000101"}~${pt || "29991231"}`;
     const terms = q.split(/\s+/).filter(Boolean);
+    const started = Date.now();
+    const pageKey = getDocumentStore() && a.scope === "current" && a.match === "all"
+      ? publicSearchKey("statute-page", "eflaw", { ...params, asOf: D, resultPage: a.page, size: a.size, kinds: JSON.stringify(a.kinds || []) })
+      : null;
+    if (pageKey) {
+      // 완성된 페이지가 없으면 같은 DB 조회에서 기존 공개 목록을 재사용한다.
+      const page = await readPrepared(pageKey,
+        value => Array.isArray(value?.items) && Number.isInteger(value.total) &&
+          value.page?.no === a.page && value.page?.size === a.size &&
+          Array.isArray(value.notes) && Array.isArray(value.warnings) && Array.isArray(value.next),
+        publicSearchKey("statute", "eflaw", params));
+      if (page) return ok({ ...structuredClone(page), asOf: D, cacheState: "hit" });
+    }
     // 이미 읽은 사전으로만 판 목록을 미리 받는다. 첫 검색은 공식 검색 결과의 ID로 판을 확인한다.
     if (a.scope === "current") {
       const exactEntry = exactDictionaryEntry(q);
@@ -98,12 +111,16 @@ export default defineTool({
     const pageRows = rows.slice((a.page - 1) * a.size, a.page * a.size);
     const items = pageRows.map((x) => item(x, ["exact", "prefix", "contains", "keyword"][tier(x)]));
     // 1순위(정확 일치)엔 시행예정 판을 붙인다
-    if (items[0] && a.scope === "current") await withUpcoming(items[0], D);
+    const versionExpiry = items[0] && a.scope === "current" ? await withUpcoming(items[0], D) : 0;
     if (r.total != null && r.total > r.items.length) notes.push(`업스트림 전체 ${r.total}건 중 상위 ${r.items.length}건을 순위 매김`);
     const next = items[0] ? [
       { tool: "article_get", args: { lawId: items[0].lawId }, why: `${items[0].name} 목차(조문 번호·제목)` },
       { tool: "statute_outline", args: { lawId: items[0].lawId, view: "hierarchy" }, why: "상하위 법령 구조" },
     ] : [];
-    return ok({ items, total, page: { no: a.page, size: a.size, hasMore: a.page * a.size < rows.length }, notes, warnings, cacheState: cacheStateOf(r), next });
+    const page = { items, total, page: { no: a.page, size: a.size, hasMore: a.page * a.size < rows.length }, notes, warnings, next };
+    if (pageKey && !r.stale && versionExpiry) {
+      await writePrepared(pageKey, structuredClone(page), started, Math.min(r.expiresAt, versionExpiry));
+    }
+    return ok({ ...page, asOf: D, cacheState: cacheStateOf(r) });
   },
 });

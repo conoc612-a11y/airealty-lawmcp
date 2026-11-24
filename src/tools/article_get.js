@@ -20,7 +20,7 @@ export async function locate(args, D, { prefetch } = {}) {
     const lawId = spec.lawId || (spec.name ? (await resolveLawName(spec.name)).lawId : null);
     if (lawId) early = { lawId, promise: prefetch({ lawId, useId: true }).catch(() => null) };
   }
-  const r = await resolveLaw(spec, D);
+  const r = await resolveLaw(spec, D, { selectionOnly: true });
   const useId = !spec.mst && r.law.status === "current" && D === todayKst();
   const access = { lawId: r.law.lawId, mst: r.chosen.mst, efYd: r.chosen.efYd, useId };
   const prefetched = early && useId && early.lawId === access.lawId ? await early.promise : null;
